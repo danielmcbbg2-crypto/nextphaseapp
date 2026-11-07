@@ -12,7 +12,7 @@ import { navigate, useHashRoute } from '../../lib/router'
 import { SiteHeader, SiteView } from '../../components/ProjectSite'
 import { PortalStore } from '../store/Shop'
 import { TRADES, type Property, type Trade } from '../../lib/types'
-import { fmtDate, money, uid } from '../../lib/utils'
+import { fmtDate, melbourneToday, money, uid } from '../../lib/utils'
 
 const NAV: NavItem[] = [
   { key: 'home', label: 'Overview', icon: Home },
@@ -340,7 +340,10 @@ function ProjectList() {
     }
   }
 
-  const respond = (id: string, approve: boolean) =>
+  const respond = (id: string, approve: boolean) => {
+    const title = mine.projects.find((x) => x.id === id)?.title ?? 'this quote'
+    // One tap on a phone shouldn't commit to (or turn down) a job: ask first.
+    if (!window.confirm(approve ? `Accept the quote for “${title}”? We'll send the deposit invoice next.` : `Decline the quote for “${title}”?`)) return
     update((d) => {
       const p = d.projects.find((x) => x.id === id)
       if (!p) return
@@ -348,6 +351,7 @@ function ProjectList() {
       p.status = approve ? 'approved' : 'rejected'
       stampQuoteDecision(p, before, actor?.id)
     })
+  }
   const decideVariation = (pid: string, vid: string, approve: boolean) => {
     const p = mine.projects.find((x) => x.id === pid)
     const v = p?.variations.find((x) => x.id === vid)
@@ -484,10 +488,17 @@ function ProjectList() {
                   ) : null
                 })()}
                 {p.status === 'quoted' && quoteTotal(p) > 0 && canQuote && (
-                  <div className="mt-4 flex gap-2 border-t border-slate-100 pt-4">
-                    <button className="btn-primary" onClick={() => respond(p.id, true)}>Accept quote</button>
-                    <button className="btn-ghost" onClick={() => respond(p.id, false)}>Decline</button>
-                  </div>
+                  // Same rule as the quote link (and the database): a quote past its date can't be accepted.
+                  !!p.quoteValidUntil && p.quoteValidUntil < melbourneToday() ? (
+                    <p className="mt-4 border-t border-slate-100 pt-4 text-sm text-slate-600">
+                      This quote expired on {fmtDate(p.quoteValidUntil)}. Contact us for an updated quote.
+                    </p>
+                  ) : (
+                    <div className="mt-4 flex gap-2 border-t border-slate-100 pt-4">
+                      <button className="btn-primary" onClick={() => respond(p.id, true)}>Accept quote</button>
+                      <button className="btn-ghost" onClick={() => respond(p.id, false)}>Decline</button>
+                    </div>
+                  )
                 )}
               </div>
             )

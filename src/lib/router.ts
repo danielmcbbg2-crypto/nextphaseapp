@@ -26,7 +26,7 @@ function current(): string[] {
   return window.location.pathname.split('/').filter(Boolean)
 }
 
-const ROUTE_EVENT = 'npm:route'
+export const ROUTE_EVENT = 'npm:route'
 
 export function useHashRoute(): string[] {
   const [route, setRoute] = useState(current)

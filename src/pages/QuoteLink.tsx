@@ -5,7 +5,7 @@ import { Field } from '../components/ui'
 import { PaymentSafety } from '../components/PaymentSafety'
 import { useStore } from '../lib/store'
 import type { QuoteLinkView } from '../lib/types'
-import { fmtDate, money } from '../lib/utils'
+import { fmtDate, melbourneToday, money } from '../lib/utils'
 import { BRAND } from '../lib/brand'
 
 const cents = (n: number) => Math.round(n * 100) / 100
@@ -92,7 +92,7 @@ export function QuoteLink({ token }: { token: string }) {
     g.items.push(i)
   }
   const exGst = cents(q.items.reduce((s, i) => s + cents(i.qty * i.rate), 0))
-  const expired = !!q.validUntil && q.status === 'quoted' && q.validUntil < new Date().toLocaleDateString('en-CA', { timeZone: 'Australia/Melbourne' })
+  const expired = !!q.validUntil && q.status === 'quoted' && q.validUntil < melbourneToday()
   const d = q.deposit
 
   return (

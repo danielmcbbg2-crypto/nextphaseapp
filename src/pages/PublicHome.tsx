@@ -167,7 +167,7 @@ export function PublicHome() {
           {/* The website pairs this with a Sydney skyline photo, left out on purpose; only its inset photo is kept. */}
           <div>
             <h2 className="rule-above text-2xl font-bold sm:text-[28px]">{SITE_COPY.specialized.title}</h2>
-            <img src={conciergePhoto} alt="Hotel concierge at a reception desk" className="mt-8 w-full max-w-[460px]" loading="lazy" />
+            <img src={conciergePhoto} alt="Hotel concierge at a reception desk" width={643} height={429} className="mt-8 h-auto w-full max-w-[460px]" loading="lazy" decoding="async" />
             <p className="mt-8 max-w-md text-base font-light leading-[1.8] text-slate-900">{SITE_COPY.specialized.body}</p>
           </div>
         </div>

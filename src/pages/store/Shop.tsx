@@ -7,7 +7,7 @@ import { BRAND } from '../../lib/brand'
 import { SignInModal } from '../../components/SignInModal'
 import { useStore, type PlacedOrder } from '../../lib/store'
 import { lineKey, useCart } from '../../lib/cart'
-import { navigate } from '../../lib/router'
+import { navigate, ROUTE_EVENT } from '../../lib/router'
 import { SITE_URL, usePageMeta } from '../../lib/head'
 import { productMeta, productPath, STORE_META } from '../../lib/seo'
 import { ORDER_STATUS_LABEL, STORE_CATEGORIES, type OrderInvoiceStatus, type OrderStatus, type Product, type UserAccount } from '../../lib/types'
@@ -58,7 +58,15 @@ export function Shop({
   // Back and forward (and links) can change the address's category while the shop stays open.
   useEffect(() => {
     if (portal || productId) return
-    setCategoryState(new URLSearchParams(window.location.search).get('category') ?? 'All')
+    const read = () => setCategoryState(new URLSearchParams(window.location.search).get('category') ?? 'All')
+    read()
+    // A link to another category (/store?category=…) changes only the address, not productId.
+    window.addEventListener('popstate', read)
+    window.addEventListener(ROUTE_EVENT, read)
+    return () => {
+      window.removeEventListener('popstate', read)
+      window.removeEventListener(ROUTE_EVENT, read)
+    }
   }, [portal, productId])
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<Sort>('featured')
