@@ -5,6 +5,7 @@
 import { after, before, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import pg from 'pg'
+import { readFileSync } from 'node:fs'
 import { applyOps, diff, fetchAll, type DbAdapter, type Row, type TableName } from '../../src/lib/db'
 import { createSeed } from '../../src/lib/seed'
 import type { AppData } from '../../src/lib/types'
@@ -30,11 +31,28 @@ async function asUser<T>(uid: string, sql: string, params: unknown[] = [], aal: 
   }
 }
 
+/**
+ * The columns the app may read from a table, as it lists them (projects.quote_token, for one, isn't
+ * readable by the API roles, so the app names the other columns instead of selecting *).
+ */
+const readableCols = new Map<string, string>()
+async function readable(t: string): Promise<string> {
+  if (!readableCols.has(t)) {
+    const r = await pool.query<{ cols: string }>(
+      `select string_agg(quote_ident(column_name), ', ' order by ordinal_position) cols from information_schema.columns
+        where table_schema = 'public' and table_name = $1 and has_column_privilege('authenticated', format('public.%I', $1), column_name, 'SELECT')`,
+      [t],
+    )
+    readableCols.set(t, r.rows[0].cols)
+  }
+  return readableCols.get(t)!
+}
+
 /** DbAdapter with the same semantics as the Supabase adapter (insert sends only the given columns). */
 function adapter(uid: string): DbAdapter {
   return {
     async select(t: TableName) {
-      return (await asUser<{ j: Row }>(uid, `select to_jsonb(x) j from public.${t} x`)).rows.map((r) => r.j)
+      return (await asUser<{ j: Row }>(uid, `select to_jsonb(x) j from (select ${await readable(t)} from public.${t}) x`)).rows.map((r) => r.j)
     },
     async insert(t: TableName, rows: Row[]) {
       const cols = Object.keys(rows[0]).map((c) => `"${c}"`).join(',')
@@ -2028,5 +2046,104 @@ describe('deleting quotes', () => {
     await pool.query(`update projects set qbo_estimate_id = '601', estimate_status = 'synced' where id = $1`, [id])
     await assert.rejects(asUser(uid.admin, `select delete_quote($1)`, [id]), /isn't connected/)
     assert.equal(await exists(id), true)
+  })
+})
+
+describe('review fixes', () => {
+  const quote = async (title: string, provider: string | null = null) => {
+    const id = (await asUser<{ id: string }>(uid.admin,
+      `insert into projects (client_id, property_id, title, quote_amount, assigned_provider_id) values ('u-client-1', 'p-1', $1, 5000, $2) returning id`, [title, provider])).rows[0].id
+    await asUser(uid.admin, `update projects set status = 'quoted' where id = $1`, [id])
+    return id
+  }
+  const status = async (id: string) => (await pool.query(`select status from projects where id = $1`, [id])).rows[0].status
+
+  test('a client can’t accept an expired quote by changing the project; an unexpired one still works', async () => {
+    const expired = await quote('RF expired')
+    await asUser(uid.admin, `update projects set quote_valid_until = '2020-01-01' where id = $1`, [expired])
+    await assert.rejects(asUser(uid.sarah, `update projects set status = 'approved' where id = $1`, [expired]), /expired on 01\/01\/2020/)
+    assert.equal(await status(expired), 'quoted')
+    // Declining an expired quote is still allowed, and the office can still approve it.
+    const declined = await quote('RF expired decline')
+    await asUser(uid.admin, `update projects set quote_valid_until = '2020-01-01' where id = $1`, [declined])
+    await asUser(uid.sarah, `update projects set status = 'rejected' where id = $1`, [declined])
+    assert.equal(await status(declined), 'rejected')
+    await asUser(uid.admin, `update projects set status = 'approved' where id = $1`, [expired])
+    assert.equal(await status(expired), 'approved')
+    // Valid today (Melbourne) still counts.
+    const today = await quote('RF valid today')
+    await pool.query(`update projects set quote_valid_until = (now() at time zone 'Australia/Melbourne')::date where id = $1`, [today])
+    await asUser(uid.sarah, `update projects set status = 'approved' where id = $1`, [today])
+    assert.equal(await status(today), 'approved')
+  })
+
+  test('quote_token can’t be read through the API (a trade could accept with it); the office gets it from admin_quote_token', async () => {
+    const id = await quote('RF token', 'u-prov-3')
+    const token = (await pool.query(`select quote_token from projects where id = $1`, [id])).rows[0].quote_token
+    assert.match(token, /^[0-9a-f]{64}$/)
+    assert.equal((await asUser(uid.tom, `select id, title from projects where id = $1`, [id])).rowCount, 1, 'the trade still sees the project')
+    for (const who of [uid.tom, uid.sarah, uid.admin]) {
+      await assert.rejects(asUser(who, `select quote_token from projects where id = $1`, [id]), /permission denied/)
+      await assert.rejects(asUser(who, `select * from projects where id = $1`, [id]), /permission denied/)
+    }
+    await assert.rejects(asAnon(`select quote_token from projects`), /permission denied/)
+    const got = async (who: string, aal: 'aal1' | 'aal2' = 'aal2') =>
+      (await asUser<{ t: string | null }>(who, `select admin_quote_token($1) t`, [id], aal)).rows[0].t
+    assert.equal(await got(uid.admin), token)
+    assert.equal(await got(uid.admin, 'aal1'), null, 'admins need the second sign-in step')
+    assert.equal(await got(uid.tom), null)
+    assert.equal(await got(uid.sarah), null)
+    await assert.rejects(asAnon(`select admin_quote_token($1)`, [id]), /permission denied/)
+    // Clients still answer quotes, and their link still works.
+    await asUser(uid.sarah, `update projects set status = 'approved' where id = $1`, [id])
+    assert.equal(await status(id), 'approved')
+  })
+
+  test('projects: every column but quote_token is readable by the app (grant new columns too)', async () => {
+    const r = await pool.query<{ column_name: string; ok: boolean; anon: boolean }>(
+      `select column_name, has_column_privilege('authenticated', 'public.projects', column_name, 'SELECT') ok,
+              has_column_privilege('anon', 'public.projects', column_name, 'SELECT') anon
+         from information_schema.columns where table_schema = 'public' and table_name = 'projects'`,
+    )
+    const wrong = r.rows.filter((c) => (c.column_name === 'quote_token') === c.ok || c.ok !== c.anon).map((c) => c.column_name)
+    assert.deepEqual(wrong, [], 'grant select (column) on public.projects to anon, authenticated for new columns')
+    // And the app's own list (src/lib/supabase.ts) names exactly those columns.
+    const listed = /PROJECT_COLUMNS(?:: string)? =\s*'([^']+)'/.exec(readFileSync('src/lib/supabase.ts', 'utf8'))?.[1].split(',') ?? []
+    const readable = r.rows.filter((c) => c.ok).map((c) => c.column_name)
+    assert.deepEqual([...listed].sort(), [...readable].sort(), 'PROJECT_COLUMNS in src/lib/supabase.ts must list every readable projects column')
+  })
+
+  test('the master admin account can’t be deleted, even by the server', async () => {
+    await assert.rejects(asUser(uid.admin, `delete from profiles where id = 'u-admin'`), /master admin account can't be deleted/)
+    await assert.rejects(pool.query(`delete from profiles where id = 'u-admin'`), /master admin account can't be deleted/)
+    assert.equal((await pool.query(`select 1 from profiles where id = 'u-admin'`)).rowCount, 1)
+  })
+
+  test('texts stuck sending for over 10 minutes are marked failed (not sent again) when the outbox is next claimed', async () => {
+    const stuck = (await pool.query<{ id: string }>(
+      `insert into sms_outbox (to_phone, message, event, status, claimed_at) values ('0400111222', 'stuck', 'RF stuck', 'sending', now() - interval '11 minutes') returning id`)).rows[0].id
+    const recent = (await pool.query<{ id: string }>(
+      `insert into sms_outbox (to_phone, message, event, status, claimed_at) values ('0400111222', 'recent', 'RF recent', 'sending', now() - interval '2 minutes') returning id`)).rows[0].id
+    const pending = (await pool.query<{ id: string }>(`insert into sms_outbox (to_phone, message, event) values ('0400111222', 'new', 'RF pending') returning id`)).rows[0].id
+    const claimed = (await pool.query<{ id: string }>(`select id from claim_sms_outbox(50)`)).rows.map((r) => r.id)
+    assert.ok(claimed.includes(pending) && !claimed.includes(stuck) && !claimed.includes(recent))
+    const st = async (id: string) => (await pool.query(`select status, detail, claimed_at is not null as claimed from sms_outbox where id = $1`, [id])).rows[0]
+    const s = await st(stuck)
+    assert.equal(s.status, 'failed')
+    assert.match(s.detail, /may or may not have been sent/)
+    assert.equal((await st(recent)).status, 'sending')
+    assert.deepEqual([(await st(pending)).status, (await st(pending)).claimed], ['sending', true])
+    assert.equal((await pool.query(`select 1 from sms_log where trigger_event = 'RF stuck' and status = 'failed'`)).rowCount, 1)
+  })
+
+  test('supplier imports are readable only by store managers who did the second sign-in step; diary dates default to Melbourne today', async () => {
+    await pool.query(`insert into supplier_imports (supplier, base_url) values ('RF Supplier', 'https://example.com')`)
+    const n = async (who: string, aal: 'aal1' | 'aal2' = 'aal2') => (await asUser(who, `select 1 from supplier_imports where supplier = 'RF Supplier'`, [], aal)).rowCount
+    assert.equal(await n(uid.admin), 1)
+    assert.equal(await n(uid.admin, 'aal1'), 0)
+    assert.equal(await n(uid.sarah), 0)
+    assert.equal(await n(uid.tom), 0)
+    const d = (await pool.query(`select column_default from information_schema.columns where table_schema = 'public' and table_name = 'project_diary' and column_name = 'date'`)).rows[0].column_default
+    assert.match(d, /Australia\/Melbourne/)
   })
 })

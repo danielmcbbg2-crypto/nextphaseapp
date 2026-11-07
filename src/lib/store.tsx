@@ -28,8 +28,8 @@ import { deliveryName } from './storePolicy'
 import { createSeed, DATA_VERSION } from './seed'
 import { dispatchSms } from './sms'
 import { generateInviteCode, money, sha256, uid } from './utils'
-import { applyOps, assemble, diff, emptyData, fetchBooked, fetchTables, productsFromRows, TABLES, tablesToRefresh, type RawData, type TableName, profileRow, projectFromRow, propertyRow, requestFromRow, userFromRow } from './db'
-import { ANON_KEY, CLOUD, DEMO, DEMO_BUILD, FUNCTIONS_URL, supabase, supabaseAdapter, uploadLeadPhoto, uploadPhoto } from './supabase'
+import { applyOps, assemble, diff, emptyData, fetchBooked, fetchTables, productsFromRows, TABLES, tablesToRefresh, type RawData, type Row, type TableName, profileRow, projectFromRow, propertyRow, requestFromRow, userFromRow } from './db'
+import { ANON_KEY, CLOUD, PROJECT_COLUMNS, DEMO, DEMO_BUILD, FUNCTIONS_URL, supabase, supabaseAdapter, uploadLeadPhoto, uploadPhoto } from './supabase'
 
 const DATA_KEY = 'npm.data.v1'
 const LOAD_ERROR = 'Couldn\'t load the latest data: '
@@ -1027,10 +1027,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         const { data: row, error } = await supabase
           .from('projects')
           .insert({ client_id: q.clientId, property_id: q.propertyId, title: q.title, description: q.description, budget: q.budget })
-          .select()
+          .select(PROJECT_COLUMNS)
           .single()
         if (error) throw new Error(error.message)
-        const project: Project = projectFromRow(row)
+        const project: Project = projectFromRow(row as unknown as Row)
         mergeLocal((d) => {
           d.projects.unshift(project)
         })
@@ -1154,10 +1154,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             status: p.status,
             assigned_provider_id: p.assignedProviderId ?? null,
           })
-          .select()
+          .select(PROJECT_COLUMNS)
           .single()
         if (error) throw new Error(error.message)
-        const saved = projectFromRow(row)
+        const saved = projectFromRow(row as unknown as Row)
         mergeLocal((d) => {
           d.projects.unshift(saved)
         })

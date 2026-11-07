@@ -21,15 +21,24 @@ export const DEMO = !CLOUD && DEMO_BUILD
 
 const PAGE = 1000
 
+/**
+ * projects.quote_token is kept from signed-in users (anyone holding it can accept the quote; the
+ * office gets it from admin_quote_token), so `select *` on projects is refused: read these columns.
+ * A new projects column needs adding here and a column grant in its migration (a DB test checks).
+ */
+export const PROJECT_COLUMNS: string =
+  'id,number,client_id,property_id,title,description,type,budget,quote_amount,scope_of_works,status,assigned_provider_id,created_at,created_by,quote_decided_by,quote_decision,quote_inclusions,quote_exclusions,quote_valid_until,quote_issued_at,quote_decided_at,quote_followed_up_at,order_id,quote_answered_name,deposit_status,deposit_amount,deposit_invoice_id,deposit_error,deposit_attempts,deposit_next_try,qbo_estimate_id,estimate_number,estimate_status,estimate_error,estimate_attempts,estimate_next_try'
+const columns = (table: TableName) => (table === 'projects' ? PROJECT_COLUMNS : '*')
+
 export function supabaseAdapter(client: SupabaseClient): DbAdapter {
   return {
     async select(table: TableName) {
       // The API returns at most 1,000 rows per request, so read in pages until a short one.
       const rows: Row[] = []
       for (let from = 0; ; from += PAGE) {
-        const { data, error } = await client.from(table).select('*').order('id').range(from, from + PAGE - 1)
+        const { data, error } = await client.from(table).select(columns(table)).order('id').range(from, from + PAGE - 1)
         if (error) throw new Error(`${table}: ${error.message}`)
-        rows.push(...((data ?? []) as Row[]))
+        rows.push(...((data ?? []) as unknown as Row[]))
         if (!data || data.length < PAGE) return rows
       }
     },

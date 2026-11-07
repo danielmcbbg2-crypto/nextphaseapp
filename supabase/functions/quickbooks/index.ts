@@ -532,6 +532,11 @@ async function run() {
     .or(`run_lock_until.is.null,run_lock_until.lt.${now.toISOString()}`)
     .select('id')
   if (!locked?.length) return { skipped: 'already running' }
+  // Time budget well inside the 3-minute lock: once it's used, no new batch is claimed (the batch in
+  // hand is finished) and the tidy-up steps wait for the next run, so the lock can't lapse while
+  // this run is still working and let a second run start alongside it.
+  const deadline = now.getTime() + 2 * 60_000
+  const outOfTime = () => Date.now() > deadline
   let invoiced = 0
   let failed = 0
   try {
@@ -540,7 +545,7 @@ async function run() {
     // Estimates first (a quote's estimate before its deposit invoice); not for ones queued before QuickBooks was connected
     // (a retry after connecting is queued afresh, so it goes ahead).
     if (conn.connected_at) await db.from('projects').update({ estimate_status: 'skipped' }).eq('estimate_status', 'pending').is('qbo_estimate_id', null).lt('estimate_next_try', conn.connected_at)
-    for (let round = 0; round < 10; round++) {
+    for (let round = 0; round < 10 && !outOfTime(); round++) {
       const { data: claimed, error } = await db.rpc('claim_quote_estimates', { max_rows: 5 })
       if (error) throw new Error(error.message)
       if (!claimed?.length) break
@@ -555,7 +560,7 @@ async function run() {
     }
     // Deposits queued before QuickBooks was connected aren't sent by it (one sent again after connecting is).
     if (conn.connected_at) await db.from('projects').update({ deposit_status: 'skipped' }).eq('deposit_status', 'pending').lt('deposit_next_try', conn.connected_at)
-    for (let round = 0; round < 10; round++) {
+    for (let round = 0; round < 10 && !outOfTime(); round++) {
       const { data: claimed, error } = await db.rpc('claim_deposit_invoices', { max_rows: 5 })
       if (error) throw new Error(error.message)
       if (!claimed?.length) break
@@ -570,7 +575,7 @@ async function run() {
         }
       }
     }
-    for (let round = 0; round < 10; round++) {
+    for (let round = 0; round < 10 && !outOfTime(); round++) {
       const { data: claimed, error } = await db.rpc('claim_order_invoices', { max_rows: 5 })
       if (error) throw new Error(error.message)
       if (!claimed?.length) break
@@ -585,9 +590,13 @@ async function run() {
         }
       }
     }
+    if (outOfTime()) {
+      await saveConn({ last_error: '' })
+      return { invoiced, failed, stopped: 'time budget used; the rest waits for the next run' }
+    }
     await voidCancelled(conn)
-    await cleanUp(conn)
-    await checkPaid(conn)
+    if (!outOfTime()) await cleanUp(conn)
+    if (!outOfTime()) await checkPaid(conn)
     await saveConn({ last_error: '' })
     return { invoiced, failed }
   } catch (e) {

@@ -23,6 +23,13 @@ function toE164(phone: string): string {
   return p
 }
 
+// Each provider call gives up after 15 seconds so a hung request can't leave a row stuck in 'sending'
+// (a timed-out text is marked failed, never retried automatically: it may have gone out).
+const PROVIDER_TIMEOUT_MS = 15_000
+// Small batches keep a run (worst case BATCH x timeout) well inside the edge function time limit;
+// the trigger and the 5-minute retry pick up whatever is left.
+const BATCH = 8
+
 type Row = { id: string; to_phone: string; message: string; event: string; attempts: number }
 type Outcome = { status: 'dispatched' | 'failed' | 'held'; detail: string }
 
@@ -42,6 +49,7 @@ async function send(row: Row): Promise<Outcome> {
         method: 'POST',
         headers: { Authorization: 'Basic ' + btoa(`${csUser}:${csKey}`), 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: [{ source: 'nextphase-portal', to, body: row.message, ...(csFrom ? { from: toE164(csFrom) } : {}) }] }),
+        signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
       })
       const body = await res.json().catch(() => ({}))
       const m = body?.data?.messages?.[0]
@@ -54,6 +62,7 @@ async function send(row: Row): Promise<Outcome> {
         method: 'POST',
         headers: { Authorization: 'Basic ' + btoa(`${sid}:${token}`), 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ To: to, From: from, Body: row.message }),
+        signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
       })
       const body = await res.json().catch(() => ({}))
       return res.ok
@@ -66,18 +75,20 @@ async function send(row: Row): Promise<Outcome> {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(secret ? { 'X-Webhook-Secret': secret } : {}) },
         body: JSON.stringify({ to, message: row.message, event: row.event }),
+        signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
       })
       return { status: res.ok ? 'dispatched' : 'failed', detail: `Webhook HTTP ${res.status}` }
     }
     return { status: 'held', detail: 'No SMS provider connected yet, so this text was not sent. Queue it again once one is connected.' }
   } catch (e) {
-    return { status: 'failed', detail: (e as Error).message }
+    const err = e as Error
+    return { status: 'failed', detail: err?.name === 'TimeoutError' ? 'SMS provider did not answer within 15 seconds (the text may or may not have been sent)' : err?.message ?? String(e) }
   }
 }
 
 Deno.serve(async (req) => {
   if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-  const { data: rows, error } = await db.rpc('claim_sms_outbox', { max_rows: 20 })
+  const { data: rows, error } = await db.rpc('claim_sms_outbox', { max_rows: BATCH })
   if (error) return Response.json({ error: error.message }, { status: 500 })
 
   const results = []

@@ -149,6 +149,8 @@ Deno.serve(async (req) => {
 
   if (body.action === 'delete') {
     if (body.profileId === me.id) return json({ error: "You can't delete your own account" }, 400)
+    // The master admin can never be deleted (the database refuses too).
+    if (body.profileId === MASTER_ID) return json({ error: 'The master admin account can’t be deleted' }, 403)
     const { data: target } = await db.from('profiles').select('id, auth_id').eq('id', body.profileId).maybeSingle()
     if (!target) return json({ error: 'Account not found' }, 404)
     // Profile first: the database refuses if jobs or invoices still reference this client, or if the
