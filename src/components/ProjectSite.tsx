@@ -324,7 +324,7 @@ function Documents({ p, as }: { p: Project; as: Viewer }) {
                   <button type="button" className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm hover:bg-slate-50" onClick={() => void open(d)}>
                     <FileText size={16} className="shrink-0 text-slate-400" aria-hidden="true" />
                     <span className="min-w-0 flex-1 truncate font-medium">{d.name}</span>
-                    <span className="num text-xs text-slate-500">{size(d.sizeBytes)} · {fmtDate(d.uploadedAt.slice(0, 10))}</span>
+                    <span className="num text-xs text-slate-500">{size(d.sizeBytes)} · {fmtDate(d.uploadedAt)}</span>
                   </button>
                 </li>
               ))}

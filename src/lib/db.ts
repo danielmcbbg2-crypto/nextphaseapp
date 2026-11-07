@@ -945,7 +945,11 @@ export async function fetchAll(db: DbAdapter): Promise<AppData> {
   }
   const byProject = (rows: Row[]) => {
     const m = new Map<string, Row[]>()
-    for (const r of rows) m.set(r.project_id as string, [...(m.get(r.project_id as string) ?? []), r])
+    for (const r of rows) {
+      const list = m.get(r.project_id as string)
+      if (list) list.push(r)
+      else m.set(r.project_id as string, [r])
+    }
     return m
   }
   const ms = byProject(milestones)

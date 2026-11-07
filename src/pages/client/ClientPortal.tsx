@@ -434,7 +434,7 @@ function ProjectList() {
                           {v.description && <p className="mt-1 whitespace-pre-wrap text-slate-600">{v.description}</p>}
                           <p className="mt-1 text-xs text-slate-500">
                             {v.amount < 0 ? 'Credit, inc GST' : 'Inc GST'} · {v.status === 'proposed' ? 'Awaiting your approval' : v.status === 'approved' ? 'Approved' : 'Declined'}
-                            {v.decidedAt ? ` ${fmtDate(v.decidedAt.slice(0, 10))}` : ''}
+                            {v.decidedAt ? ` ${fmtDate(v.decidedAt)}` : ''}
                           </p>
                           {v.status === 'proposed' && canQuote && (
                             <div className="mt-2 flex gap-2">
@@ -512,7 +512,7 @@ function ProjectList() {
             <textarea className="input min-h-[110px]" required value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
           </Field>
           <Field label="Indicative budget (AUD, optional)">
-            <input className="input num" type="number" min="0" step="100" value={form.budget} onChange={(e) => setForm({ ...form, budget: e.target.value })} />
+            <input className="input num" type="number" min="0" step="any" value={form.budget} onChange={(e) => setForm({ ...form, budget: e.target.value })} />
           </Field>
           {error && <p className="text-sm text-red-600">{error}</p>}
           <div className="flex justify-end">

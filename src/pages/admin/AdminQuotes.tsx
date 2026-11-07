@@ -121,8 +121,8 @@ export function AdminQuotes() {
           project={editing}
           initialTab="quote"
           onClose={() => setEditing(null)}
-          onSave={(p) => {
-            save(p)
+          onSave={(p, base) => {
+            save(p, base)
             setEditing(null)
           }}
         />
@@ -168,7 +168,7 @@ function FollowUpRow({ p, now, onOpen }: { p: Project; now: number; onOpen: () =
   const client = lk.user(p.clientId)
   const first = client?.name.split(' ')[0] ?? 'there'
   const expiry = daysToExpiry(p, now)
-  const issued = p.quoteIssuedAt ? fmtDate(p.quoteIssuedAt.slice(0, 10)) : 'recently'
+  const issued = p.quoteIssuedAt ? fmtDate(p.quoteIssuedAt) : 'recently'
   const message = `Hi ${first}, it's Next Phase Maintenance. Just checking in on the quote for ${p.title} we sent on ${issued}${
     expiry !== undefined && expiry >= 0 && expiry <= 7 ? ` (it's valid until ${fmtDate(p.quoteValidUntil)})` : ''
   }. Happy to answer any questions or adjust anything. You can accept it in your portal.`

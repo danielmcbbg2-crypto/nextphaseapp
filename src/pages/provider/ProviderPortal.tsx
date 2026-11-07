@@ -384,7 +384,12 @@ function ProjectList() {
 }
 
 const DAY_MS = 86_400_000
-const shiftDate = (iso: string, days: number) => toISODate(new Date(new Date(`${iso}T00:00:00`).getTime() + days * DAY_MS))
+// By calendar days, not 24-hour steps: the days the clocks change are 23 or 25 hours long.
+const shiftDate = (iso: string, days: number) => {
+  const d = new Date(`${iso}T00:00:00`)
+  d.setDate(d.getDate() + days)
+  return toISODate(d)
+}
 const daysBetween = (a: string, b: string) => Math.round((new Date(`${b}T00:00:00`).getTime() - new Date(`${a}T00:00:00`).getTime()) / DAY_MS)
 
 /**

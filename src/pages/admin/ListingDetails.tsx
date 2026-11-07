@@ -122,7 +122,7 @@ export function ListingDetails({ p, price, set }: { p: Product; price: number; s
         </Field>
         {p.images.map((src, i) => (
           <label key={src} className="flex items-start gap-3 sm:col-span-2">
-            <img src={src} alt="" className="h-12 w-12 shrink-0 object-cover" />
+            <img src={src} alt="" loading="lazy" decoding="async" className="h-12 w-12 shrink-0 object-cover" />
             <span className="block flex-1">
               <span className="label">Photo {i + 1} description</span>
               <input

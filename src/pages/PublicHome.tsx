@@ -130,7 +130,7 @@ export function PublicHome() {
 
       {/* Hero: full-bleed interior photo with the website's headline */}
       <section className="relative isolate overflow-hidden bg-[#3d342d]">
-        <img src={interiorPhoto} alt="" className="absolute inset-0 -z-10 h-full w-full object-cover object-[70%_50%]" />
+        <img src={interiorPhoto} alt="" fetchPriority="high" decoding="async" className="absolute inset-0 -z-10 h-full w-full object-cover object-[70%_50%]" />
         <div className="absolute inset-0 -z-10 bg-gradient-to-r from-black/45 via-black/20 to-transparent" />
         {/* Below lg the text sits over the bright sofa, so darken the whole photo a little more. */}
         <div className="absolute inset-0 -z-10 bg-black/25 lg:hidden" />

@@ -151,7 +151,7 @@ export function PhotoInput({ value, onChange, max = 6 }: { value: string[]; onCh
       <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
         {value.map((src, i) => (
           <div key={i} className="group relative aspect-square overflow-hidden rounded-md border border-slate-200">
-            <img src={src} alt={`Attachment ${i + 1}`} className="h-full w-full object-cover" />
+            <img src={src} alt={`Attachment ${i + 1}`} loading="lazy" decoding="async" className="h-full w-full object-cover" />
             <button
               type="button"
               onClick={() => onChange(value.filter((_, j) => j !== i))}
@@ -188,7 +188,7 @@ export function PhotoStrip({ photos }: { photos: string[] }) {
       <div className="flex flex-wrap gap-2">
         {photos.map((src, i) => (
           <button key={i} onClick={() => setOpen(src)} className="h-16 w-16 overflow-hidden rounded border border-slate-200 hover:opacity-90">
-            <img src={src} alt={`Photo ${i + 1}`} className="h-full w-full object-cover" />
+            <img src={src} alt={`Photo ${i + 1}`} loading="lazy" decoding="async" className="h-full w-full object-cover" />
           </button>
         ))}
       </div>

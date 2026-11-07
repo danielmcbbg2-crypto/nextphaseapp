@@ -434,6 +434,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const localVersion = useRef(0)
   const refreshWanted = useRef(false)
   const signedInAs = useRef<string | null>(null)
+  const refreshGeneration = useRef(0)
 
   const refresh = useCallback(async () => {
     if (!db || !signedInAs.current) return
@@ -442,8 +443,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       return
     }
     const startedAt = localVersion.current
+    // Realtime changes can start a second refresh before the first returns; only the newest may apply,
+    // or an older, slower one could land last and put stale data back on screen.
+    const generation = ++refreshGeneration.current
     try {
       const fresh = await fetchAll(db)
+      if (generation !== refreshGeneration.current) return
       // Drop the result if the person changed something while it was loading; another refresh follows the save.
       if (startedAt !== localVersion.current || pending.current > 0) {
         refreshWanted.current = true

@@ -6,7 +6,7 @@
 //
 // Products come from the database with the public (anon) key, as visitors see them. Without the
 // Supabase settings (or if it can't be reached) the products are left out and the rest still built.
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { BRAND } from '../src/lib/brand'
 import { complianceFacts, DEFAULT_SITE_URL, HOME_META, pageTitle, productMeta, productPath, STORE_META, breadcrumbJsonLd, businessJsonLd, type PageMeta, type ProductForSeo } from '../src/lib/seo'
@@ -59,7 +59,7 @@ async function products(): Promise<ProductForSeo[]> {
 }
 
 /** The page's own <head> tags, and its words and links for crawlers (the app replaces them when it starts). */
-function render(m: PageMeta, body: string): string {
+function render(m: PageMeta, body: string, extraHead: string[] = []): string {
   const url = `${SITE}${m.path}`
   const title = pageTitle(m.title)
   const head = [
@@ -78,6 +78,7 @@ function render(m: PageMeta, body: string): string {
     // Proves to Google Search Console that the site is ours (its "HTML tag" method).
     ...(VERIFY ? [`<meta name="google-site-verification" content="${esc(VERIFY)}" />`] : []),
     ...(m.jsonLd ?? []).map((ld) => `<script type="application/ld+json" data-page-ld>${ldJson(ld)}</script>`),
+    ...extraHead,
   ].join('\n    ')
   return template
     .replace(/<title>[\s\S]*?<\/title>/, '')
@@ -104,7 +105,11 @@ const pages: { path: string; lastmod?: string }[] = []
 
 // Home
 const home = HOME_META(SITE)
-write('/', render(home, `<main><h1>${esc(BRAND.name)}</h1><p>${esc(home.description)}</p>${nav}</main>`))
+// The hero photo is the largest thing on the home page; the app only asks for it once its code has
+// run, so tell the browser about it straight away.
+const hero = readdirSync(join(DIST, 'assets')).find((f) => /^interior-.*\.webp$/.test(f))
+const heroPreload = hero ? [`<link rel="preload" as="image" type="image/webp" href="/assets/${hero}" fetchpriority="high" />`] : []
+write('/', render(home, `<main><h1>${esc(BRAND.name)}</h1><p>${esc(home.description)}</p>${nav}</main>`, heroPreload))
 pages.push({ path: '/' })
 
 // Shop
