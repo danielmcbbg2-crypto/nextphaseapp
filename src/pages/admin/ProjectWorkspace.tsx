@@ -311,7 +311,7 @@ export function Photos({ urls, label }: { urls: string[]; label: string }) {
     <div className="mt-2 flex flex-wrap gap-2">
       {urls.map((u, i) => (
         <a key={u} href={u} target="_blank" rel="noreferrer" className="block h-16 w-16 overflow-hidden border border-slate-200">
-          <img src={u} alt={`${label} ${i + 1}`} className="h-full w-full object-cover" />
+          <img src={u} alt={`${label} ${i + 1}`} loading="lazy" decoding="async" className="h-full w-full object-cover" />
         </a>
       ))}
     </div>
@@ -629,7 +629,7 @@ export function DocumentsPanel({ projectId }: { projectId: string }) {
                   <button type="button" className="min-w-0 flex-1 truncate text-left font-medium hover:underline" onClick={() => void open(d)}>
                     {d.name}
                   </button>
-                  <span className="num text-xs text-slate-500">{size(d.sizeBytes)} · {fmtDate(d.uploadedAt.slice(0, 10))}{d.uploadedBy ? ` · ${lk.user(d.uploadedBy)?.name ?? ''}` : ''}</span>
+                  <span className="num text-xs text-slate-500">{size(d.sizeBytes)} · {fmtDate(d.uploadedAt)}{d.uploadedBy ? ` · ${lk.user(d.uploadedBy)?.name ?? ''}` : ''}</span>
                   <select
                     className="input w-auto py-1 text-xs"
                     aria-label={`Who can see ${d.name}`}

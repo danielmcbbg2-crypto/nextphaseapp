@@ -244,7 +244,7 @@ export function VariationsPanel({ p, set, original }: Panel & { original: Projec
                 {v.description && <p className="whitespace-pre-wrap text-slate-600">{v.description}</p>}
                 <p className="text-xs text-slate-500">
                   {v.status === 'proposed' ? (saved.has(v.id) ? 'Awaiting the client' : 'New: the client is told when you save') : v.status === 'approved' ? 'Approved' : 'Declined'}
-                  {v.decidedAt ? ` · ${fmtDate(v.decidedAt.slice(0, 10))}` : ''}
+                  {v.decidedAt ? ` · ${fmtDate(v.decidedAt)}` : ''}
                 </p>
               </div>
               <div className="text-right">

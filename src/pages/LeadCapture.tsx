@@ -88,6 +88,9 @@ function PhotoPicker({ value, onChange }: { value: string[]; onChange: (v: strin
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [over, setOver] = useState(false)
+  // The photos as they are now: shrinking new ones takes a moment, and one may be removed meanwhile.
+  const latest = useRef(value)
+  latest.current = value
   const add = async (files: FileList | null) => {
     const images = Array.from(files ?? []).filter((f) => f.type.startsWith('image/'))
     if (!images.length) return
@@ -96,7 +99,9 @@ function PhotoPicker({ value, onChange }: { value: string[]; onChange: (v: strin
     try {
       const room = MAX_PHOTOS - value.length
       if (images.length > room) setError(`Up to ${MAX_PHOTOS} photos: the first ${room} were added.`)
-      onChange([...value, ...(await Promise.all(images.slice(0, room).map((f) => imageToDataUrl(f))))])
+      const added = await Promise.all(images.slice(0, room).map((f) => imageToDataUrl(f)))
+      const now = latest.current
+      onChange([...now, ...added.filter((src) => !now.includes(src))].slice(0, MAX_PHOTOS))
     } catch {
       setError('One of those photos couldn’t be read. Try a JPEG or PNG.')
     } finally {
@@ -113,11 +118,11 @@ function PhotoPicker({ value, onChange }: { value: string[]; onChange: (v: strin
     <div>
       <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
         {value.map((src, i) => (
-          <div key={i} className="relative aspect-square overflow-hidden border border-slate-200">
+          <div key={src} className="relative aspect-square overflow-hidden border border-slate-200">
             <img src={src} alt={`Photo ${i + 1}`} className="h-full w-full object-cover" />
             <button
               type="button"
-              onClick={() => onChange(value.filter((_, j) => j !== i))}
+              onClick={() => onChange(value.filter((x) => x !== src))}
               className="absolute right-1 top-1 bg-white/90 p-0.5 text-slate-700 shadow-sm hover:bg-white"
               aria-label={`Remove photo ${i + 1}`}
             >

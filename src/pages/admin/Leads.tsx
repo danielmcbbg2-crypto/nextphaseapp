@@ -31,7 +31,7 @@ function LeadPhotos({ paths }: { paths: string[] }) {
       {(urls ?? paths.map(() => '')).map((u, i) =>
         u ? (
           <a key={i} href={u} target="_blank" rel="noreferrer" className="block aspect-square overflow-hidden border border-slate-200 hover:opacity-90">
-            <img src={u} alt={`Photo ${i + 1}`} className="h-full w-full object-cover" />
+            <img src={u} alt={`Photo ${i + 1}`} loading="lazy" decoding="async" className="h-full w-full object-cover" />
           </a>
         ) : (
           <div key={i} className="aspect-square animate-pulse bg-slate-100" />

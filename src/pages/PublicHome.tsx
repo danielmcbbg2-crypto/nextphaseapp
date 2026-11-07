@@ -130,7 +130,7 @@ export function PublicHome() {
 
       {/* Hero: full-bleed interior photo with the website's headline */}
       <section className="relative isolate overflow-hidden bg-[#3d342d]">
-        <img src={interiorPhoto} alt="" className="absolute inset-0 -z-10 h-full w-full object-cover object-[70%_50%]" />
+        <img src={interiorPhoto} alt="" fetchPriority="high" decoding="async" className="absolute inset-0 -z-10 h-full w-full object-cover object-[70%_50%]" />
         <div className="absolute inset-0 -z-10 bg-gradient-to-r from-black/45 via-black/20 to-transparent" />
         {/* Below lg the text sits over the bright sofa, so darken the whole photo a little more. */}
         <div className="absolute inset-0 -z-10 bg-black/25 lg:hidden" />
@@ -167,7 +167,7 @@ export function PublicHome() {
           {/* The website pairs this with a Sydney skyline photo, left out on purpose; only its inset photo is kept. */}
           <div>
             <h2 className="rule-above text-2xl font-bold sm:text-[28px]">{SITE_COPY.specialized.title}</h2>
-            <img src={conciergePhoto} alt="Hotel concierge at a reception desk" className="mt-8 w-full max-w-[460px]" loading="lazy" />
+            <img src={conciergePhoto} alt="Hotel concierge at a reception desk" width={643} height={429} className="mt-8 h-auto w-full max-w-[460px]" loading="lazy" decoding="async" />
             <p className="mt-8 max-w-md text-base font-light leading-[1.8] text-slate-900">{SITE_COPY.specialized.body}</p>
           </div>
         </div>

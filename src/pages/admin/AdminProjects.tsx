@@ -17,16 +17,49 @@ import { useHashRoute } from '../../lib/router'
 import { BookingReminders } from './BookingReminders'
 import { DeleteQuote, DepositPanel, EstimateLine, SendQuoteLink } from './QuoteLinkPanels'
 
-/**
- * The diary, defects and documents are saved as they're added (by the office, trades and the
- * client), so a draft of the rest of the project never overwrites them.
- */
-function keepLiveParts(next: Project, current: Project | undefined): Project {
-  if (current) {
-    next.diary = current.diary
-    next.defects = current.defects
-    next.documents = current.documents
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+
+/** A list of rows merged three ways: the editor's own changes win, everyone else's are kept. */
+function mergeRows<T extends { id: string }>(draft: T[], base: T[], live: T[]): T[] {
+  const baseById = new Map(base.map((r) => [r.id, r]))
+  const liveById = new Map(live.map((r) => [r.id, r]))
+  const draftIds = new Set(draft.map((r) => r.id))
+  const out: T[] = []
+  for (const r of draft) {
+    const b = baseById.get(r.id)
+    const l = liveById.get(r.id)
+    // Untouched in the editor: take what's stored now (or leave it out if someone removed it).
+    if (b && same(r, b)) {
+      if (l) out.push(l)
+    } else out.push(r)
   }
+  // Added by someone else (a trade's expense, a client's variation) while the editor was open.
+  for (const l of live) if (!draftIds.has(l.id) && !baseById.has(l.id)) out.push(l)
+  return out
+}
+
+/**
+ * A project draft, saved over what's stored now. The diary, defects and documents are saved as
+ * they're added (by the office, trades and the client), so they always come from the stored project.
+ * Given the project as it was when the editor opened (`base`), only what the editor changed is
+ * applied: a trade's expense or a client's variation decision made meanwhile isn't wiped out.
+ */
+function keepLiveParts(next: Project, current: Project | undefined, base?: Project): Project {
+  if (!current) return next
+  if (base) {
+    const merged = next as unknown as Record<string, unknown>
+    const b = base as unknown as Record<string, unknown>
+    const c = current as unknown as Record<string, unknown>
+    for (const k of Object.keys(merged)) {
+      const d = merged[k]
+      if (Array.isArray(d) && Array.isArray(b[k]) && Array.isArray(c[k]) && d.every((r) => r && typeof r === 'object' && 'id' in r)) {
+        merged[k] = mergeRows(d as { id: string }[], b[k] as { id: string }[], c[k] as { id: string }[])
+      } else if (same(d, b[k]) && k in c) merged[k] = c[k]
+    }
+  }
+  next.diary = current.diary
+  next.defects = current.defects
+  next.documents = current.documents
   return next
 }
 const draftKey = (p: Project) => JSON.stringify({ ...p, diary: null, defects: null, documents: null })
@@ -34,10 +67,10 @@ const draftKey = (p: Project) => JSON.stringify({ ...p, diary: null, defects: nu
 /** Saves a project edited in the office, telling the trade, the client and so on what changed for them. */
 export function useSaveProject() {
   const { data, user, update, pushInbox } = useStore()
-  return (p: Project) => {
+  return (p: Project, base?: Project) => {
     const before = data.projects.find((x) => x.id === p.id)
     update((d) => {
-      const next = keepLiveParts(structuredClone(p), d.projects.find((x) => x.id === p.id))
+      const next = keepLiveParts(structuredClone(p), d.projects.find((x) => x.id === p.id), base)
       if (before) stampQuoteDecision(next, before.status, user?.id)
       d.projects = d.projects.map((x) => (x.id === p.id ? next : x))
     })
@@ -445,7 +478,7 @@ export function NewProjectForm({ onClose, onCreated, quote = false }: { onClose:
           </select>
         </Field>
         <Field label="Budget (AUD)">
-          <input type="number" min="0" step="100" className="input num" value={p.budget} onChange={(e) => setP({ ...p, budget: e.target.value })} />
+          <input type="number" min="0" step="any" className="input num" value={p.budget} onChange={(e) => setP({ ...p, budget: e.target.value })} />
         </Field>
         <Field label="Quote amount (AUD, inc. GST)">
           <input type="number" min="0" step="0.01" className="input num" value={p.quoteAmount} onChange={(e) => setP({ ...p, quoteAmount: e.target.value })} />
@@ -512,7 +545,8 @@ export function ProjectEditor({
 }: {
   project: Project
   onClose: () => void
-  onSave: (p: Project) => void
+  /** `base` is the project as it was when this draft started, so others' changes since are kept. */
+  onSave: (p: Project, base: Project) => void
   initialTab?: EditorTab
   /** The full project workspace (with schedule, diary, defects and documents) instead of a pop-up. */
   asPage?: boolean
@@ -549,7 +583,7 @@ export function ProjectEditor({
     }
     if (next.status === 'quoted' && !((next.quoteAmount ?? 0) > 0)) return setError('Price the quote before issuing it.')
     setError(null)
-    onSave(next)
+    onSave(next, saved)
     // The workspace page stays open: what's saved is now the starting point.
     setP(next)
     setSaved(next)
@@ -572,7 +606,7 @@ export function ProjectEditor({
         dueDate: toISODate(due),
         createdAt: new Date().toISOString(),
       })
-      d.projects = d.projects.map((x) => (x.id === p.id ? keepLiveParts(structuredClone(next), x) : x))
+      d.projects = d.projects.map((x) => (x.id === p.id ? keepLiveParts(structuredClone(next), x, saved) : x))
     })
     setP(next)
     setSaved(next)
@@ -705,7 +739,7 @@ export function ProjectEditor({
               </select>
             </Field>
             <Field label="Budget (AUD)">
-              <input type="number" min="0" step="100" className="input num" value={p.budget || ''} onChange={(e) => set({ budget: Number(e.target.value) || 0 })} />
+              <input type="number" min="0" step="any" className="input num" value={p.budget || ''} onChange={(e) => set({ budget: Number(e.target.value) || 0 })} />
             </Field>
             {itemised ? (
               <div>

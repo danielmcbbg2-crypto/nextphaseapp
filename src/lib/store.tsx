@@ -28,10 +28,11 @@ import { deliveryName } from './storePolicy'
 import { createSeed, DATA_VERSION } from './seed'
 import { dispatchSms } from './sms'
 import { generateInviteCode, money, sha256, uid } from './utils'
-import { applyOps, diff, emptyData, fetchAll, productsFromRows, profileRow, projectFromRow, propertyRow, requestFromRow, userFromRow } from './db'
-import { ANON_KEY, CLOUD, DEMO, DEMO_BUILD, FUNCTIONS_URL, supabase, supabaseAdapter, uploadLeadPhoto, uploadPhoto } from './supabase'
+import { applyOps, assemble, diff, emptyData, fetchBooked, fetchTables, productsFromRows, TABLES, tablesToRefresh, type RawData, type Row, type TableName, profileRow, projectFromRow, propertyRow, requestFromRow, userFromRow } from './db'
+import { ANON_KEY, CLOUD, PROJECT_COLUMNS, DEMO, DEMO_BUILD, FUNCTIONS_URL, supabase, supabaseAdapter, uploadLeadPhoto, uploadPhoto } from './supabase'
 
 const DATA_KEY = 'npm.data.v1'
+const LOAD_ERROR = 'Couldn\'t load the latest data: '
 const SESSION_KEY = 'npm.session.v1'
 const ACTING_KEY = 'npm.actingAs.v1'
 
@@ -434,61 +435,157 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const localVersion = useRef(0)
   const refreshWanted = useRef(false)
   const signedInAs = useRef<string | null>(null)
+  const refreshGeneration = useRef(0)
+  /** Changes with each sign-in and sign-out, so a load started for one session never lands in another. */
+  const sessionEpoch = useRef(0)
+  /** The rows last read from each table; a change event reads only its tables again and rebuilds from these. */
+  const raw = useRef<RawData | null>(null)
+  /** Per table (and the booked projects), the generation of the refresh whose rows `raw` holds. */
+  const appliedGeneration = useRef<Partial<Record<TableName | 'booked', number>>>({})
+  /** Tables whose refresh was dropped (the person changed something meanwhile), to read again. */
+  const dirty = useRef<Set<TableName> | 'all'>(new Set())
+  /** The last failed save's message and tables: only a later save to one of those tables clears it. */
+  const saveFailure = useRef<{ message: string; tables: Set<TableName> } | null>(null)
 
-  const refresh = useCallback(async () => {
-    if (!db || !signedInAs.current) return
-    if (pending.current > 0) {
-      refreshWanted.current = true
-      return
-    }
-    const startedAt = localVersion.current
-    try {
-      const fresh = await fetchAll(db)
-      // Drop the result if the person changed something while it was loading; another refresh follows the save.
-      if (startedAt !== localVersion.current || pending.current > 0) {
+  const markDirty = useCallback((tables: readonly TableName[] | 'all') => {
+    if (tables === 'all' || dirty.current === 'all') dirty.current = 'all'
+    else for (const t of tables) dirty.current.add(t)
+  }, [])
+
+  /** Takes the tables waiting to be read again: undefined for all of them. */
+  const takeDirty = useCallback((): TableName[] | undefined => {
+    const d = dirty.current
+    dirty.current = new Set()
+    return d === 'all' ? undefined : TABLES.filter((t) => d.has(t))
+  }, [])
+
+  /** Clears the cached rows, e.g. on sign-out, so the next load reads everything. */
+  const resetCache = useCallback(() => {
+    sessionEpoch.current++
+    raw.current = null
+    appliedGeneration.current = {}
+    dirty.current = new Set()
+    refreshWanted.current = false
+  }, [])
+
+  /**
+   * Reads the given tables again (all of them by default, or when nothing is loaded yet) and rebuilds
+   * the data from the newest rows of every table.
+   */
+  const refresh = useCallback(
+    async (tables?: readonly TableName[]): Promise<void> => {
+      if (!db || !signedInAs.current) return
+      const want: readonly TableName[] | 'all' = tables && raw.current ? tables : 'all'
+      if (want !== 'all' && want.length === 0) return
+      if (pending.current > 0) {
+        markDirty(want)
         refreshWanted.current = true
         return
       }
-      setData(fresh)
-    } catch (e) {
-      setSyncError(`Couldn't load the latest data: ${(e as Error).message}`)
-    }
-  }, [db, setData])
+      const startedAt = localVersion.current
+      const epoch = sessionEpoch.current
+      // Realtime changes can start a second refresh before the first returns. Each table keeps the
+      // rows of the newest refresh that has landed for it, so an older, slower one never puts stale
+      // rows back, while its other tables still land.
+      const generation = ++refreshGeneration.current
+      const list = want === 'all' ? TABLES : want
+      try {
+        // The booked projects are worked out from projects, tasks and defects; it's one cheap call, so
+        // it's read with every refresh.
+        const [rows, booked] = await Promise.all([fetchTables(db, list), fetchBooked(db)])
+        if (epoch !== sessionEpoch.current) return
+        // Drop the result if the person changed something while it was loading; it runs again once
+        // the change is saved (or straight away if nothing is waiting to save).
+        if (startedAt !== localVersion.current || pending.current > 0) {
+          markDirty(want)
+          if (pending.current > 0) refreshWanted.current = true
+          else void refresh(takeDirty())
+          return
+        }
+        const base: RawData = raw.current ?? { tables: {} as RawData['tables'], booked: [] }
+        const next: RawData = { tables: { ...base.tables }, booked: base.booked }
+        const applied = appliedGeneration.current
+        for (const t of list) {
+          if ((applied[t] ?? 0) > generation) continue
+          next.tables[t] = rows[t] ?? []
+          applied[t] = generation
+        }
+        if ((applied.booked ?? 0) <= generation) {
+          next.booked = booked
+          applied.booked = generation
+        }
+        // Nothing to build until every table has landed once.
+        if (TABLES.some((t) => !next.tables[t])) return
+        raw.current = next
+        setData(assemble(next))
+        setSyncError((cur) => (cur?.startsWith(LOAD_ERROR) ? null : cur))
+      } catch (e) {
+        if (epoch !== sessionEpoch.current) return
+        // Read again next time.
+        markDirty(want)
+        setSyncError(`${LOAD_ERROR}${(e as Error).message}`)
+      }
+    },
+    [db, setData, markDirty, takeDirty],
+  )
 
+  /** Saves the difference; resolves true once saved (or if there was nothing to save), false if it failed. */
   const enqueueSave = useCallback(
-    (prev: AppData, next: AppData) => {
-      if (!db) return
+    (prev: AppData, next: AppData): Promise<boolean> => {
+      if (!db) return Promise.resolve(true)
       const ops = diff(prev, next)
-      if (ops.length === 0) return
+      if (ops.length === 0) return Promise.resolve(true)
       pending.current++
+      let saved = false
+      const tables = new Set(ops.map((o) => o.table))
       queue.current = queue.current
         .then(() => applyOps(db, ops))
-        .then(() => setSyncError(null))
+        .then(() => {
+          saved = true
+          // A failed save stays on screen until the same kind of change saves; other messages clear.
+          const failed = saveFailure.current
+          if (failed && ![...tables].some((t) => failed.tables.has(t))) return
+          saveFailure.current = null
+          setSyncError(null)
+        })
         .catch((e: Error) => {
-          setSyncError(`Not saved — ${e.message}`)
+          const message = `Not saved — ${e.message}`
+          saveFailure.current = { message, tables }
+          setSyncError(message)
+          // Put back what the server really has.
+          markDirty('all')
           refreshWanted.current = true
         })
         .finally(() => {
           pending.current--
           if (pending.current === 0 && refreshWanted.current) {
             refreshWanted.current = false
-            void refresh()
+            void refresh(takeDirty())
           }
         })
+      return queue.current.then(() => saved)
     },
-    [db, refresh],
+    [db, refresh, markDirty, takeDirty],
   )
 
-  const update = useCallback(
-    (fn: (draft: AppData) => void) => {
+  /** Like `update`, resolving once the change is saved (true) or the save failed (false). */
+  const updateAndSave = useCallback(
+    (fn: (draft: AppData) => void): Promise<boolean> => {
       const prev = dataRef.current
       const next = structuredClone(prev)
       fn(next)
       localVersion.current++
       setData(next)
-      if (CLOUD) enqueueSave(prev, next)
+      return CLOUD ? enqueueSave(prev, next) : Promise.resolve(true)
     },
     [setData, enqueueSave],
+  )
+
+  const update = useCallback(
+    (fn: (draft: AppData) => void) => {
+      void updateAndSave(fn)
+    },
+    [updateAndSave],
   )
 
   /** Adds rows the server already created (e.g. a just-inserted request) without re-saving them. */
@@ -512,15 +609,30 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const client = supabase
     let channel: RealtimeChannel | null = null
     let timer: ReturnType<typeof setTimeout> | undefined
+    /** Tables named by change events in the current debounce window. */
+    let changed = new Set<string>()
+    /** Each load takes the next number; one that sees a newer number after an await stops there. */
+    let loadSeq = 0
+    /** The login a load is under way for, if any. */
+    let loadingFor: string | null = null
 
-    const teardown = () => {
+    const removeChannel = () => {
+      clearTimeout(timer)
+      changed = new Set()
       if (channel) void client.removeChannel(channel)
       channel = null
+    }
+
+    const teardown = () => {
+      removeChannel()
       signedInAs.current = null
+      resetCache()
     }
 
     const load = async (session: Session | null) => {
       if (!session) {
+        loadSeq++
+        loadingFor = null
         recovering.current = false
         teardown()
         setCloudProfile(null)
@@ -528,12 +640,25 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setPhase('ready')
         return
       }
-      if (signedInAs.current === session.user.id && !recovering.current) {
-        setPhase('ready')
-        return
+      const id = session.user.id
+      if (!recovering.current) {
+        // The same login signed in twice (e.g. the first session and then SIGNED_IN): the load under
+        // way finishes and sets the phase.
+        if (loadingFor === id) return
+        if (signedInAs.current === id) {
+          setPhase('ready')
+          return
+        }
+      }
+      const seq = ++loadSeq
+      loadingFor = id
+      const stale = () => seq !== loadSeq
+      const finish = () => {
+        if (!stale()) loadingFor = null
       }
       setPhase('loading')
-      const { data: rows, error } = await client.from('profiles').select('*').eq('auth_id', session.user.id)
+      const { data: rows, error } = await client.from('profiles').select('*').eq('auth_id', id)
+      if (stale()) return
       const row = rows?.[0]
       if (error || !row || row.status === 'suspended') {
         setAuthNotice(
@@ -543,6 +668,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               ? "This login isn't linked to a Next Phase Maintenance account."
               : 'This account is suspended. Contact Next Phase Maintenance.',
         )
+        finish()
         await client.auth.signOut()
         return
       }
@@ -550,32 +676,46 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setCloudProfile(profile)
       if (profile.status === 'invited' || recovering.current) {
         setPhase('set-password')
+        finish()
         return
       }
       // Admins need the second step before the database gives them anything.
       if (profile.role === 'admin') {
         const { data: aal } = await client.auth.mfa.getAuthenticatorAssuranceLevel()
+        if (stale()) return
         if (aal?.currentLevel !== 'aal2') {
           teardown()
           setData(emptyData())
           setTwoStep(aal?.nextLevel === 'aal2' ? 'code' : 'set-up')
           setPhase('two-step')
+          finish()
           return
         }
       }
       setTwoStep(null)
       teardown()
-      signedInAs.current = session.user.id
+      signedInAs.current = id
       setAuthNotice(null)
       await refresh()
+      if (stale()) return
+      // Only ever one subscription, even if an earlier load got this far.
+      removeChannel()
       channel = client
         .channel('npm-db')
-        .on('postgres_changes', { event: '*', schema: 'public' }, () => {
+        .on('postgres_changes', { event: '*', schema: 'public' }, (payload) => {
+          // Read again only the tables that changed (and those whose visible rows follow them).
+          changed.add(payload.table)
           clearTimeout(timer)
-          timer = setTimeout(() => void refresh(), 400)
+          timer = setTimeout(() => {
+            const tables = tablesToRefresh(changed)
+            changed = new Set()
+            if (tables === 'all') void refresh()
+            else void refresh(tables)
+          }, 400)
         })
         .subscribe()
       setPhase('ready')
+      finish()
     }
 
     loadSession.current = load
@@ -587,10 +727,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     })
     return () => {
       sub.subscription.unsubscribe()
-      clearTimeout(timer)
+      loadSeq++
       teardown()
     }
-  }, [refresh, setData])
+  }, [refresh, setData, resetCache])
 
   const startTwoStepSetup = useCallback(async (): Promise<TwoStepSetup> => {
     if (!supabase) throw new Error('Two-step sign-in is for the live portal.')
@@ -647,8 +787,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const row = rows?.[0]
       if (!row) return { error: "This login isn't linked to a Next Phase Maintenance account." }
       if (row.status === 'suspended') return { error: 'This account is suspended. Contact Next Phase Maintenance.' }
-      // The auth listener now loads the data; hold portal routes until it's ready.
-      setPhase('loading')
+      // The auth listener loads the data and sets the phase. Portal routes are held until it's ready,
+      // but a phase it has already moved on to (two-step, set-password, ready) is left alone.
+      setPhase((p) => (p === 'ready' && signedInAs.current !== res.user.id ? 'loading' : p))
       return { role: row.role as Role }
     }
     const u = dataRef.current.users.find((x) => x.email.toLowerCase() === email.trim().toLowerCase())
@@ -886,10 +1027,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         const { data: row, error } = await supabase
           .from('projects')
           .insert({ client_id: q.clientId, property_id: q.propertyId, title: q.title, description: q.description, budget: q.budget })
-          .select()
+          .select(PROJECT_COLUMNS)
           .single()
         if (error) throw new Error(error.message)
-        const project: Project = projectFromRow(row)
+        const project: Project = projectFromRow(row as unknown as Row)
         mergeLocal((d) => {
           d.projects.unshift(project)
         })
@@ -1013,10 +1154,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             status: p.status,
             assigned_provider_id: p.assignedProviderId ?? null,
           })
-          .select()
+          .select(PROJECT_COLUMNS)
           .single()
         if (error) throw new Error(error.message)
-        const saved = projectFromRow(row)
+        const saved = projectFromRow(row as unknown as Row)
         mergeLocal((d) => {
           d.projects.unshift(saved)
         })
@@ -1323,13 +1464,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const deleteProjectDocument = useCallback(
     (projectId: string, documentId: string) => {
       const doc = dataRef.current.projects.find((p) => p.id === projectId)?.documents.find((x) => x.id === documentId)
-      update((d) => {
+      const saved = updateAndSave((d) => {
         const p = d.projects.find((x) => x.id === projectId)
         if (p) p.documents = p.documents.filter((x) => x.id !== documentId)
       })
-      if (supabase && doc && !doc.path.startsWith('data:')) void supabase.storage.from('project-docs').remove([doc.path])
+      // The file goes once the record is deleted, so a failed delete never leaves a record without its file.
+      const client = supabase
+      if (client && doc && !doc.path.startsWith('data:')) {
+        void saved.then((ok) => {
+          if (ok) void client.storage.from('project-docs').remove([doc.path])
+        })
+      }
     },
-    [update],
+    [updateAndSave],
   )
 
   /** Viewable links for a request's photos (live: short-lived signed links; demo: the images themselves). */
@@ -1344,12 +1491,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const deleteLead = useCallback(
     (id: string) => {
       const photos = dataRef.current.leads.find((l) => l.id === id)?.photos ?? []
-      update((d) => {
+      const saved = updateAndSave((d) => {
         d.leads = d.leads.filter((l) => l.id !== id)
       })
-      if (supabase && photos.length) void supabase.storage.from('lead-photos').remove(photos)
+      // The photos go once the request is deleted, so a failed delete never leaves it without them.
+      const client = supabase
+      if (client && photos.length) {
+        void saved.then((ok) => {
+          if (ok) void client.storage.from('lead-photos').remove(photos)
+        })
+      }
     },
-    [update],
+    [updateAndSave],
   )
 
   const findProducts = useCallback(async (query: string, onProgress?: (text: string) => void, signal?: AbortSignal) => {
@@ -1724,72 +1877,138 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (DEMO) setData(createSeed())
   }, [setData])
 
-  const value: StoreValue = {
-    cloud: CLOUD,
-    phase,
-    data,
-    user,
-    actor: user,
-    actingAs,
-    startActingAs,
-    stopActingAs,
-    canAct: alwaysAllowed,
-    syncError,
-    authNotice,
-    update,
-    can,
-    login,
-    acceptInvite,
-    sendPasswordEmail,
-    setNewPassword,
-    acceptLink,
-    logout,
-    twoStep,
-    cloudUserEmail: cloudProfile?.email,
-    startTwoStepSetup,
-    confirmTwoStep,
-    changePassword,
-    notifyAdmins,
-    sendSms,
-    submitRequest,
-    requestQuote,
-    createProject,
-    loadCatalog,
-    placeOrder,
-    submitLead,
-    leadPhotoUrls,
-    uploadProjectFile,
-    projectFileUrl,
-    deleteProjectDocument,
-    logText,
-    deleteLead,
-    findProducts,
-    draftListing,
-    draftQuote,
-    quoteByToken,
-    answerQuoteByToken,
-    sendQuoteDeposit,
-    deleteQuote,
-    retryQuoteEstimate,
-    recreatePhotos,
-    colourPhoto,
-    checkSupplierStock,
-    quickBooksStatus,
-    connectQuickBooks,
-    disconnectQuickBooks,
-    setQuickBooksLimits,
-    retryInvoice,
-    confirmDelivery,
-    orderInvoice,
-    assignRequest,
-    pushInbox,
-    pushAdminInbox,
-    uploadImage,
-    inviteAccount,
-    getSignInLink,
-    deleteAccount,
-    resetDemoData,
-  }
+  // Memoised so consumers (and ActingAsProvider's own memo) re-render only when something in it changes.
+  const value = useMemo<StoreValue>(
+    () => ({
+      cloud: CLOUD,
+      phase,
+      data,
+      user,
+      actor: user,
+      actingAs,
+      startActingAs,
+      stopActingAs,
+      canAct: alwaysAllowed,
+      syncError,
+      authNotice,
+      update,
+      can,
+      login,
+      acceptInvite,
+      sendPasswordEmail,
+      setNewPassword,
+      acceptLink,
+      logout,
+      twoStep,
+      cloudUserEmail: cloudProfile?.email,
+      startTwoStepSetup,
+      confirmTwoStep,
+      changePassword,
+      notifyAdmins,
+      sendSms,
+      submitRequest,
+      requestQuote,
+      createProject,
+      loadCatalog,
+      placeOrder,
+      submitLead,
+      leadPhotoUrls,
+      uploadProjectFile,
+      projectFileUrl,
+      deleteProjectDocument,
+      logText,
+      deleteLead,
+      findProducts,
+      draftListing,
+      draftQuote,
+      quoteByToken,
+      answerQuoteByToken,
+      sendQuoteDeposit,
+      deleteQuote,
+      retryQuoteEstimate,
+      recreatePhotos,
+      colourPhoto,
+      checkSupplierStock,
+      quickBooksStatus,
+      connectQuickBooks,
+      disconnectQuickBooks,
+      setQuickBooksLimits,
+      retryInvoice,
+      confirmDelivery,
+      orderInvoice,
+      assignRequest,
+      pushInbox,
+      pushAdminInbox,
+      uploadImage,
+      inviteAccount,
+      getSignInLink,
+      deleteAccount,
+      resetDemoData,
+    }),
+    [
+      acceptInvite,
+      acceptLink,
+      actingAs,
+      answerQuoteByToken,
+      assignRequest,
+      authNotice,
+      can,
+      changePassword,
+      checkSupplierStock,
+      cloudProfile,
+      colourPhoto,
+      confirmDelivery,
+      confirmTwoStep,
+      connectQuickBooks,
+      createProject,
+      data,
+      deleteAccount,
+      deleteLead,
+      deleteProjectDocument,
+      deleteQuote,
+      disconnectQuickBooks,
+      draftListing,
+      draftQuote,
+      findProducts,
+      getSignInLink,
+      inviteAccount,
+      leadPhotoUrls,
+      loadCatalog,
+      logText,
+      login,
+      logout,
+      notifyAdmins,
+      orderInvoice,
+      phase,
+      placeOrder,
+      projectFileUrl,
+      pushAdminInbox,
+      pushInbox,
+      quickBooksStatus,
+      quoteByToken,
+      recreatePhotos,
+      requestQuote,
+      resetDemoData,
+      retryInvoice,
+      retryQuoteEstimate,
+      sendPasswordEmail,
+      sendQuoteDeposit,
+      sendSms,
+      setNewPassword,
+      setQuickBooksLimits,
+      startActingAs,
+      startTwoStepSetup,
+      stopActingAs,
+      submitLead,
+      submitRequest,
+      syncError,
+      twoStep,
+      update,
+      uploadImage,
+      uploadProjectFile,
+      user,
+    ],
+  )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>
 }

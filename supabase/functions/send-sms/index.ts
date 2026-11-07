@@ -133,8 +133,13 @@ Deno.serve(async (req) => {
       if (!wanted) return json({ results: [] })
       const where = r.properties ? ` · ${r.properties.address}, ${r.properties.suburb}` : ''
       const message = `NPM #${r.number}${r.urgency === 'urgent' ? ' URGENT' : ''} — ${r.title}${where} (${r.category})`
+      // Claim the alert before sending: only the call that flips sms_notified from false sends, so
+      // two calls at once can't both text the admins.
+      const { data: claimed, error: claimError } = await db.from('requests').update({ sms_notified: true })
+        .eq('id', r.id).eq('sms_notified', false).select('id')
+      if (claimError) return json({ error: claimError.message }, 500)
+      if (!claimed?.length) return json({ results: [] }) // another call is sending it
       const results = await sendToAdmins(recipients, message, 'New maintenance request')
-      await db.from('requests').update({ sms_notified: true }).eq('id', r.id)
       return json({ results })
     }
 

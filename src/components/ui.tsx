@@ -91,17 +91,58 @@ export function Modal({
   children: ReactNode
   width?: string
 }) {
+  const dialog = useRef<HTMLDivElement>(null)
+  // Typed into: a tap on the backdrop (easy to do by mistake on a phone) no longer throws it away.
+  const touched = useRef(false)
+  const close = useRef(onClose)
+  close.current = onClose
   useEffect(() => {
     if (!open) return
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    touched.current = false
+    // Focus moves into the dialog, stays there while it's open, and goes back where it was after.
+    const before = document.activeElement as HTMLElement | null
+    const focusable = () =>
+      Array.from(dialog.current?.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') ?? [])
+    // The dialog itself, not its first field, so a phone doesn't pop its keyboard up straight away.
+    dialog.current?.focus({ preventScroll: true })
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') return close.current()
+      if (e.key !== 'Tab') return
+      const els = focusable()
+      if (!els.length) return
+      const [a, z] = [els[0], els[els.length - 1]]
+      if (!dialog.current?.contains(document.activeElement)) {
+        e.preventDefault()
+        ;(e.shiftKey ? z : a).focus()
+      } else if (e.shiftKey && (document.activeElement === a || document.activeElement === dialog.current)) {
+        e.preventDefault()
+        z.focus()
+      } else if (!e.shiftKey && document.activeElement === z) {
+        e.preventDefault()
+        a.focus()
+      }
+    }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      before?.focus?.({ preventScroll: true })
+    }
+  }, [open])
   if (!open) return null
   return (
     // Auto margins centre the dialog but, unlike align-items: center, keep its top reachable when it's taller than the screen.
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4" onMouseDown={onClose}>
-      <div className={cx('card w-full shadow-xl sm:my-auto', width)} onMouseDown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={title}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4" onMouseDown={() => !touched.current && onClose()}>
+      <div
+        ref={dialog}
+        tabIndex={-1}
+        className={cx('card w-full shadow-xl outline-none sm:my-auto', width)}
+        onMouseDown={(e) => e.stopPropagation()}
+        onInput={() => (touched.current = true)}
+        onChange={() => (touched.current = true)}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+      >
         <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
           <h2 className="text-base font-bold">{title}</h2>
           <button onClick={onClose} className="rounded p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-700" aria-label="Close">
@@ -151,7 +192,7 @@ export function PhotoInput({ value, onChange, max = 6 }: { value: string[]; onCh
       <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
         {value.map((src, i) => (
           <div key={i} className="group relative aspect-square overflow-hidden rounded-md border border-slate-200">
-            <img src={src} alt={`Attachment ${i + 1}`} className="h-full w-full object-cover" />
+            <img src={src} alt={`Attachment ${i + 1}`} loading="lazy" decoding="async" className="h-full w-full object-cover" />
             <button
               type="button"
               onClick={() => onChange(value.filter((_, j) => j !== i))}
@@ -188,7 +229,7 @@ export function PhotoStrip({ photos }: { photos: string[] }) {
       <div className="flex flex-wrap gap-2">
         {photos.map((src, i) => (
           <button key={i} onClick={() => setOpen(src)} className="h-16 w-16 overflow-hidden rounded border border-slate-200 hover:opacity-90">
-            <img src={src} alt={`Photo ${i + 1}`} className="h-full w-full object-cover" />
+            <img src={src} alt={`Photo ${i + 1}`} loading="lazy" decoding="async" className="h-full w-full object-cover" />
           </button>
         ))}
       </div>

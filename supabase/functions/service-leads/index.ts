@@ -234,7 +234,12 @@ Deno.serve(async (req) => {
       const phone = clip(body.phone, 40)
       if (phone.replace(/\D/g, '').length < 8) return json({ error: 'Enter the customer’s mobile number.' }, 400)
       if (lead.phone) return json({ error: 'This customer has already been texted.' }, 409)
-      await db.from('leads').update({ phone, status: 'contacted' }).eq('id', lead.id)
+      // Claim the lead by setting its phone only while it's still empty (leads.phone is not null,
+      // default ''), so two taps or two tabs can't both queue the text.
+      const { data: claimed, error: claimError } = await db.from('leads').update({ phone, status: 'contacted' })
+        .eq('id', lead.id).eq('phone', '').select('id')
+      if (claimError) throw new Error(claimError.message)
+      if (!claimed?.length) return json({ error: 'This customer has already been texted.' }, 409)
       const first = lead.name === 'Service.com.au customer' ? 'there' : String(lead.name).split(' ')[0]
       const job = String(row.headline || 'job').replace(/\.$/, '').toLowerCase()
       const msg = `Hi ${first}, it's Daniel from Next Phase Maintenance. I've just replied to your ${job} request on Service.com.au. Happy to chat or come out for a look. If you can, text through a few photos and I'll get you a quote.`

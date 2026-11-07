@@ -12,7 +12,7 @@ import { navigate, useHashRoute } from '../../lib/router'
 import { SiteHeader, SiteView } from '../../components/ProjectSite'
 import { PortalStore } from '../store/Shop'
 import { TRADES, type Property, type Trade } from '../../lib/types'
-import { fmtDate, money, uid } from '../../lib/utils'
+import { fmtDate, melbourneToday, money, uid } from '../../lib/utils'
 
 const NAV: NavItem[] = [
   { key: 'home', label: 'Overview', icon: Home },
@@ -340,7 +340,10 @@ function ProjectList() {
     }
   }
 
-  const respond = (id: string, approve: boolean) =>
+  const respond = (id: string, approve: boolean) => {
+    const title = mine.projects.find((x) => x.id === id)?.title ?? 'this quote'
+    // One tap on a phone shouldn't commit to (or turn down) a job: ask first.
+    if (!window.confirm(approve ? `Accept the quote for “${title}”? We'll send the deposit invoice next.` : `Decline the quote for “${title}”?`)) return
     update((d) => {
       const p = d.projects.find((x) => x.id === id)
       if (!p) return
@@ -348,6 +351,7 @@ function ProjectList() {
       p.status = approve ? 'approved' : 'rejected'
       stampQuoteDecision(p, before, actor?.id)
     })
+  }
   const decideVariation = (pid: string, vid: string, approve: boolean) => {
     const p = mine.projects.find((x) => x.id === pid)
     const v = p?.variations.find((x) => x.id === vid)
@@ -434,7 +438,7 @@ function ProjectList() {
                           {v.description && <p className="mt-1 whitespace-pre-wrap text-slate-600">{v.description}</p>}
                           <p className="mt-1 text-xs text-slate-500">
                             {v.amount < 0 ? 'Credit, inc GST' : 'Inc GST'} · {v.status === 'proposed' ? 'Awaiting your approval' : v.status === 'approved' ? 'Approved' : 'Declined'}
-                            {v.decidedAt ? ` ${fmtDate(v.decidedAt.slice(0, 10))}` : ''}
+                            {v.decidedAt ? ` ${fmtDate(v.decidedAt)}` : ''}
                           </p>
                           {v.status === 'proposed' && canQuote && (
                             <div className="mt-2 flex gap-2">
@@ -484,10 +488,17 @@ function ProjectList() {
                   ) : null
                 })()}
                 {p.status === 'quoted' && quoteTotal(p) > 0 && canQuote && (
-                  <div className="mt-4 flex gap-2 border-t border-slate-100 pt-4">
-                    <button className="btn-primary" onClick={() => respond(p.id, true)}>Accept quote</button>
-                    <button className="btn-ghost" onClick={() => respond(p.id, false)}>Decline</button>
-                  </div>
+                  // Same rule as the quote link (and the database): a quote past its date can't be accepted.
+                  !!p.quoteValidUntil && p.quoteValidUntil < melbourneToday() ? (
+                    <p className="mt-4 border-t border-slate-100 pt-4 text-sm text-slate-600">
+                      This quote expired on {fmtDate(p.quoteValidUntil)}. Contact us for an updated quote.
+                    </p>
+                  ) : (
+                    <div className="mt-4 flex gap-2 border-t border-slate-100 pt-4">
+                      <button className="btn-primary" onClick={() => respond(p.id, true)}>Accept quote</button>
+                      <button className="btn-ghost" onClick={() => respond(p.id, false)}>Decline</button>
+                    </div>
+                  )
                 )}
               </div>
             )
@@ -512,7 +523,7 @@ function ProjectList() {
             <textarea className="input min-h-[110px]" required value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
           </Field>
           <Field label="Indicative budget (AUD, optional)">
-            <input className="input num" type="number" min="0" step="100" value={form.budget} onChange={(e) => setForm({ ...form, budget: e.target.value })} />
+            <input className="input num" type="number" min="0" step="any" value={form.budget} onChange={(e) => setForm({ ...form, budget: e.target.value })} />
           </Field>
           {error && <p className="text-sm text-red-600">{error}</p>}
           <div className="flex justify-end">

@@ -12,5 +12,15 @@ export default defineConfig(({ mode }) => ({
     // No inline module-preload polyfill, so the Content-Security-Policy (netlify.toml) can keep
     // script-src to 'self' with no 'unsafe-inline'. Every target browser preloads modules natively.
     modulePreload: { polyfill: false },
+    rollupOptions: {
+      output: {
+        // Libraries change far less often than the app, so they get their own files and stay
+        // cached in visitors' browsers across deploys.
+        manualChunks: mode === 'single-file' ? undefined : {
+          react: ['react', 'react-dom'],
+          supabase: ['@supabase/supabase-js'],
+        },
+      },
+    },
   },
 }))

@@ -619,7 +619,7 @@ function Products({ onEdit }: { onEdit: (p: Product) => void }) {
                   <td className="td">
                     <div className="flex items-center gap-3">
                       {p.images[0] ? (
-                        <img src={p.images[0]} alt="" className="h-10 w-10 shrink-0 object-cover" />
+                        <img src={p.images[0]} alt="" loading="lazy" decoding="async" className="h-10 w-10 shrink-0 object-cover" />
                       ) : (
                         <span className="flex h-10 w-10 shrink-0 items-center justify-center bg-slate-100 text-slate-400"><Package size={18} /></span>
                       )}
@@ -742,7 +742,7 @@ function OptionsEditor({ draft, onChange, auto, pricing }: { draft: OptionDraft;
                       <div className="flex items-center gap-2">
                         {v.image && (
                           <span className="relative shrink-0">
-                            <img src={v.image} alt={`${v.label} photo`} className="h-9 w-9 rounded object-cover ring-1 ring-slate-200" />
+                            <img src={v.image} alt={`${v.label} photo`} loading="lazy" decoding="async" className="h-9 w-9 rounded object-cover ring-1 ring-slate-200" />
                             <button
                               type="button"
                               className="absolute -right-1.5 -top-1.5 rounded-full bg-white text-xs leading-none text-slate-500 ring-1 ring-slate-300 hover:text-red-600"

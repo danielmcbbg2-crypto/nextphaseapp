@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Check, Copy, ExternalLink, Mail, Trash2 } from 'lucide-react'
 import { Status, type Tone } from '../../components/ui'
 import { TextButton } from '../../components/TextMessage'
@@ -6,6 +6,37 @@ import { useLookup, useStore } from '../../lib/store'
 import { DEPOSIT_STATUS_LABEL, type DepositStatus, type Project } from '../../lib/types'
 import { quoteTotal } from '../../lib/quote'
 import { fmtDate, money } from '../../lib/utils'
+import { supabase } from '../../lib/supabase'
+
+/**
+ * The quote's private link token. The live database keeps it from trades and clients (anyone with it
+ * can accept the quote), so the office asks for it separately; demo data carries it on the project.
+ */
+function useQuoteToken(p: Project): string | undefined {
+  const [token, setToken] = useState<string | undefined>(supabase ? undefined : p.quoteToken)
+  const issued = p.status === 'quoted' ? `${p.id}:${p.quoteIssuedAt ?? ''}` : ''
+  useEffect(() => {
+    if (!supabase) return setToken(p.quoteToken)
+    setToken(undefined)
+    if (!issued) return
+    const client = supabase
+    let live = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    // Just issued: the token is made when the save reaches the database, so try again for a few seconds.
+    const ask = async (tries: number) => {
+      const { data } = await client.rpc('admin_quote_token', { p_id: p.id })
+      if (!live) return
+      if (data) setToken(data as string)
+      else if (tries > 0) timer = setTimeout(() => void ask(tries - 1), 2000)
+    }
+    void ask(3)
+    return () => {
+      live = false
+      clearTimeout(timer)
+    }
+  }, [issued, p.id, p.quoteToken])
+  return token
+}
 
 export const quoteLink = (token: string) => `${window.location.origin}/#/quote/${token}`
 
@@ -17,10 +48,11 @@ export function SendQuoteLink({ p }: { p: Project }) {
   const { update } = useStore()
   const lk = useLookup()
   const [copied, setCopied] = useState(false)
-  if (!p.quoteToken) return null
+  const token = useQuoteToken(p)
+  if (!token) return null
   const client = lk.user(p.clientId)
   const first = client?.name.split(' ')[0] || 'there'
-  const link = quoteLink(p.quoteToken)
+  const link = quoteLink(token)
   const message = `Hi ${first}, it's Next Phase Maintenance. Your quote for ${p.title} is ready: ${money(quoteTotal(p))} inc. GST${
     p.quoteValidUntil ? `, valid until ${fmtDate(p.quoteValidUntil)}` : ''
   }. You can read it and accept it here: ${link}`

@@ -27,6 +27,9 @@ export function fmtDateTime(iso: string): string {
   })
 }
 
+/** Today's date (YYYY-MM-DD) in Melbourne, whatever the device's time zone: the date quotes expire by. */
+export const melbourneToday = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Australia/Melbourne' })
+
 export function todayISO(): string {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`

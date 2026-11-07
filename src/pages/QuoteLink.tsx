@@ -5,7 +5,7 @@ import { Field } from '../components/ui'
 import { PaymentSafety } from '../components/PaymentSafety'
 import { useStore } from '../lib/store'
 import type { QuoteLinkView } from '../lib/types'
-import { fmtDate, money } from '../lib/utils'
+import { fmtDate, melbourneToday, money } from '../lib/utils'
 import { BRAND } from '../lib/brand'
 
 const cents = (n: number) => Math.round(n * 100) / 100
@@ -35,8 +35,11 @@ export function QuoteLink({ token }: { token: string }) {
   }, [quoteByToken, token])
 
   // Just accepted: the deposit invoice is made within moments; wait a little for its pay link.
+  // Keyed on the statuses, not the quote itself: each poll replaces the quote, which would otherwise
+  // restart the timer (and its try count) every time, so it never stopped.
+  const waitingForDeposit = !!q && q.status === 'approved' && ['pending', 'working'].includes(q.deposit.status)
   useEffect(() => {
-    if (!q || q.status !== 'approved' || !['pending', 'working'].includes(q.deposit.status)) return
+    if (!waitingForDeposit) return
     let live = true
     let tries = 0
     const t = setInterval(async () => {
@@ -50,7 +53,7 @@ export function QuoteLink({ token }: { token: string }) {
       live = false
       clearInterval(t)
     }
-  }, [q, quoteByToken, token])
+  }, [waitingForDeposit, quoteByToken, token])
 
   const answer = async (accept: boolean) => {
     setBusy(true)
@@ -89,7 +92,7 @@ export function QuoteLink({ token }: { token: string }) {
     g.items.push(i)
   }
   const exGst = cents(q.items.reduce((s, i) => s + cents(i.qty * i.rate), 0))
-  const expired = !!q.validUntil && q.status === 'quoted' && q.validUntil < new Date().toLocaleDateString('en-CA', { timeZone: 'Australia/Melbourne' })
+  const expired = !!q.validUntil && q.status === 'quoted' && q.validUntil < melbourneToday()
   const d = q.deposit
 
   return (
@@ -99,14 +102,14 @@ export function QuoteLink({ token }: { token: string }) {
       <p className="mt-1 text-sm text-slate-600">
         For {q.client}
         {q.address ? ` · ${q.address}` : ''}
-        {q.issuedAt ? ` · issued ${fmtDate(q.issuedAt.slice(0, 10))}` : ''}
+        {q.issuedAt ? ` · issued ${fmtDate(q.issuedAt)}` : ''}
         {q.validUntil ? ` · valid until ${fmtDate(q.validUntil)}` : ''}
       </p>
 
       {q.status === 'approved' && (
         <div className="mt-5 rounded-md border border-emerald-200 bg-emerald-50 p-4" role="status">
           <p className="flex items-center gap-2 font-semibold text-emerald-900">
-            <CheckCircle2 size={18} /> Accepted{q.answeredName ? ` by ${q.answeredName}` : ''}{q.answeredAt ? ` on ${fmtDate(q.answeredAt.slice(0, 10))}` : ''}. Thank you!
+            <CheckCircle2 size={18} /> Accepted{q.answeredName ? ` by ${q.answeredName}` : ''}{q.answeredAt ? ` on ${fmtDate(q.answeredAt)}` : ''}. Thank you!
           </p>
           {(d.status === 'sent' || d.status === 'paid') && d.amount ? (
             <div className="mt-2 text-sm text-emerald-900">
@@ -134,7 +137,7 @@ export function QuoteLink({ token }: { token: string }) {
       )}
       {q.status === 'rejected' && (
         <p className="mt-5 flex items-center gap-2 rounded-md bg-slate-100 p-4 text-sm text-slate-700" role="status">
-          <XCircle size={18} /> You declined this quote{q.answeredAt ? ` on ${fmtDate(q.answeredAt.slice(0, 10))}` : ''}. If you change your mind or want changes, contact us.
+          <XCircle size={18} /> You declined this quote{q.answeredAt ? ` on ${fmtDate(q.answeredAt)}` : ''}. If you change your mind or want changes, contact us.
         </p>
       )}
 

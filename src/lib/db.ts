@@ -518,21 +518,45 @@ const strip = (row: Row, cols: string[] = []) => {
   return out
 }
 
-/** Computes the database operations that turn `prev` into `next`. */
+/** A table's rows by id, each with its JSON (to compare a whole row at once). */
+type RowIndex = Map<string, { row: Row; json: string }>
+
+// The rows built from each AppData copy, kept while that copy lives. The copy one `diff` builds as
+// "next" is usually the next one's "prev", so each edit builds and serialises the rows once, not twice.
+const rowCache = new WeakMap<AppData, Map<Spec, RowIndex>>()
+
+function rowIndex(d: AppData, spec: Spec): RowIndex {
+  let perSpec = rowCache.get(d)
+  if (!perSpec) rowCache.set(d, (perSpec = new Map()))
+  let index = perSpec.get(spec)
+  if (!index) {
+    index = new Map(spec.rows(d).map((row) => [row.id as string, { row, json: JSON.stringify(row) }]))
+    perSpec.set(spec, index)
+  }
+  return index
+}
+
+/**
+ * Computes the database operations that turn `prev` into `next`. Both must be treated as immutable
+ * once diffed (the store only ever replaces its data with a fresh copy), as their rows are cached.
+ */
 export function diff(prev: AppData, next: AppData): Op[] {
   const inserts: Op[] = []
   const updates: Op[] = []
   const deletes: Op[] = []
   for (const spec of SPECS) {
-    const before = new Map(spec.rows(prev).map((r) => [r.id as string, r]))
-    const after = new Map(spec.rows(next).map((r) => [r.id as string, r]))
+    const before = rowIndex(prev, spec)
+    const after = rowIndex(next, spec)
     const added: Row[] = []
-    for (const [id, row] of after) {
-      const old = before.get(id)
-      if (!old) {
+    for (const [id, { row, json }] of after) {
+      const was = before.get(id)
+      if (!was) {
         added.push(strip(row, spec.readonly))
         continue
       }
+      // Most rows are unchanged: one comparison of the whole row settles them.
+      if (was.json === json) continue
+      const old = was.row
       const patch: Row = {}
       for (const k of Object.keys(row)) {
         if (spec.readonly?.includes(k)) continue
@@ -817,7 +841,6 @@ const smsFromRow = (r: Row): SmsNotification => ({
 
 const newestFirst = (k: string) => (a: Row, b: Row) => String(b[k]).localeCompare(String(a[k]))
 
-/** Loads everything the signed-in person is allowed to see. */
 export const productsFromRows = (products: Row[], tradePrices: Row[] = [], sources: Row[] = [], clientPrices: Row[] = []): Product[] => {
   const trade = new Map(tradePrices.map((r) => [r.id as string, num(r.price)]))
   const client = new Map(clientPrices.map((r) => [r.id as string, num(r.price)]))
@@ -931,33 +954,124 @@ const ordersFromRows = (orders: Row[], items: Row[], notes: Row[]): StoreOrder[]
   }))
 }
 
+/** The rows of every table as the database returned them, plus the projects a trade is booked on. */
+export interface RawData {
+  tables: Record<TableName, Row[]>
+  /** The `my_booked_projects` answer. */
+  booked: Row[]
+}
+
+/** Reads the given tables (all of them by default). */
+export async function fetchTables(db: DbAdapter, tables: readonly TableName[] = TABLES): Promise<Partial<Record<TableName, Row[]>>> {
+  const rows = await Promise.all(tables.map((t) => db.select(t)))
+  return Object.fromEntries(tables.map((t, n) => [t, rows[n]])) as Partial<Record<TableName, Row[]>>
+}
+
+/**
+ * Projects a trade is booked on but isn't the project's own trade for: their tasks, diary, defects
+ * and documents come with the tables, and this adds the project's name and address.
+ */
+export async function fetchBooked(db: DbAdapter): Promise<Row[]> {
+  return ((await db.call?.('my_booked_projects')) ?? []) as Row[]
+}
+
+/** Reads everything the signed-in person is allowed to see, as rows. */
+export async function fetchRaw(db: DbAdapter): Promise<RawData> {
+  const [tables, booked] = await Promise.all([fetchTables(db), fetchBooked(db)])
+  return { tables: tables as Record<TableName, Row[]>, booked }
+}
+
+/** Loads everything the signed-in person is allowed to see. */
 export async function fetchAll(db: DbAdapter): Promise<AppData> {
-  const [profiles, properties, projects, requests, milestones, expenses, quoteItems, variations, payments, costs, tasks, diary, defects, documents, invoices, inbox, sms, settings, products, tradePrices, clientPrices, sources, orders, orderItems, orderNotes, leads, texts, quoteTemplates, priceHistory] =
-    await Promise.all(TABLES.map((t) => db.select(t)))
-  // Projects a trade is booked on but isn't the project's own trade for: their tasks, diary,
-  // defects and documents come with the tables above, and this adds the project's name and address.
-  const booked = ((await db.call?.('my_booked_projects')) ?? []) as Row[]
-  for (const b of booked) {
+  return assemble(await fetchRaw(db))
+}
+
+const ALL_PROJECT_CHILDREN: TableName[] = [
+  'project_milestones',
+  'project_expenses',
+  'project_quote_items',
+  'project_variations',
+  'project_payments',
+  'project_costs',
+  'project_tasks',
+  'project_diary',
+  'project_defects',
+  'project_documents',
+]
+
+/**
+ * Tables whose visible rows can change when a row of the key table changes, though they get no
+ * change event of their own (row-level security follows the parent: e.g. a trade assigned to a
+ * project starts seeing its milestones, property and invoices).
+ */
+const ALSO_REFRESH: Partial<Record<TableName, TableName[]>> = {
+  projects: [...ALL_PROJECT_CHILDREN, 'properties', 'invoices'],
+  requests: ['properties', 'invoices'],
+  // Being booked on a task or defect shows that project's tasks, diary, defects and documents
+  // (and, through my_booked_projects, its name and address).
+  project_tasks: ['project_tasks', 'project_defects', 'project_diary', 'project_documents', 'projects', 'properties'],
+  project_defects: ['project_tasks', 'project_defects', 'project_diary', 'project_documents', 'projects', 'properties'],
+  products: ['product_trade_prices', 'product_client_prices', 'product_sources', 'product_price_history'],
+  orders: ['order_items', 'order_notes'],
+}
+
+/**
+ * The tables to read again after change events on `changed` (table names from realtime payloads),
+ * or 'all'. A change to a profile can change a person's role or permissions, and with them what
+ * every table shows, so it reloads everything. Tables the app doesn't load are ignored.
+ */
+export function tablesToRefresh(changed: Iterable<string>): TableName[] | 'all' {
+  const out = new Set<TableName>()
+  for (const name of changed) {
+    if (!(TABLES as readonly string[]).includes(name)) continue
+    const t = name as TableName
+    if (t === 'profiles') return 'all'
+    out.add(t)
+    for (const extra of ALSO_REFRESH[t] ?? []) out.add(extra)
+  }
+  return TABLES.filter((t) => out.has(t))
+}
+
+/** Builds the app's data from the rows. Leaves `raw` unchanged, so it can be kept and built again. */
+export function assemble(raw: RawData): AppData {
+  const t = raw.tables
+  const projects = [...t.projects]
+  const properties = [...t.properties]
+  for (const b of raw.booked) {
     if (projects.some((p) => p.id === b.id)) continue
     const site = `site-${b.id as string}`
     projects.push({ id: b.id, number: b.number, title: b.title, status: b.status, client_id: '', property_id: site, description: '', type: 'renovation', budget: 0, scope_of_works: '', created_at: '' })
     properties.push({ id: site, client_id: '', address: b.address, suburb: b.suburb, postcode: b.postcode, paint_colors: { walls: '', trim: '', ceiling: '' }, skirt_profile: '', cladding_type: '', access_code: '', notes: '' })
   }
+  const profiles = [...t.profiles]
+  const requests = [...t.requests]
+  const invoices = [...t.invoices]
+  const inbox = [...t.inbox]
+  const sms = [...t.sms_log]
+  const settings = t.settings
+  const priceHistory = [...t.product_price_history]
+  const leads = [...t.leads]
+  const texts = [...t.text_log]
+  const quoteTemplates = [...t.quote_templates]
   const byProject = (rows: Row[]) => {
     const m = new Map<string, Row[]>()
-    for (const r of rows) m.set(r.project_id as string, [...(m.get(r.project_id as string) ?? []), r])
+    for (const r of rows) {
+      const list = m.get(r.project_id as string)
+      if (list) list.push(r)
+      else m.set(r.project_id as string, [r])
+    }
     return m
   }
-  const ms = byProject(milestones)
-  const ex = byProject(expenses)
-  const qi = byProject(quoteItems)
-  const va = byProject(variations)
-  const pa = byProject(payments)
-  const co = byProject(costs)
-  const ta = byProject(tasks)
-  const di = byProject(diary)
-  const de = byProject(defects)
-  const dc = byProject(documents)
+  const ms = byProject(t.project_milestones)
+  const ex = byProject(t.project_expenses)
+  const qi = byProject(t.project_quote_items)
+  const va = byProject(t.project_variations)
+  const pa = byProject(t.project_payments)
+  const co = byProject(t.project_costs)
+  const ta = byProject(t.project_tasks)
+  const di = byProject(t.project_diary)
+  const de = byProject(t.project_defects)
+  const dc = byProject(t.project_documents)
   const s = settings[0] as { sms?: Partial<SmsSettings>; bank?: AppData['bank']; pricing?: Partial<Pricing> } | undefined
   return {
     version: DATA_VERSION,
@@ -995,8 +1109,8 @@ export async function fetchAll(db: DbAdapter): Promise<AppData> {
           trade: o.trade === null || o.trade === undefined ? undefined : num(o.trade),
         })),
       })),
-    products: productsFromRows(products, tradePrices, sources, clientPrices),
-    orders: ordersFromRows(orders, orderItems, orderNotes),
+    products: productsFromRows([...t.products], t.product_trade_prices, t.product_sources, t.product_client_prices),
+    orders: ordersFromRows([...t.orders], t.order_items, t.order_notes),
     leads: leads.sort(newestFirst('created_at')).map((r) => ({
       id: r.id as string,
       number: num(r.number),
