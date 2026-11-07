@@ -47,8 +47,10 @@ export function paymentAmounts(p: Project, invoices: QuickBooksInvoice[]): Map<s
   }
   const balance = p.payments.filter((s) => s.basis === 'balance' && !out.has(s.id))
   if (balance.length) {
-    const rest = cents(contractTotal(p) - [...out.values()].reduce((a, b) => a + b, 0))
-    for (const s of balance) out.set(s.id, balance.length === 1 ? Math.max(0, rest) : 0)
+    const rest = Math.max(0, cents(contractTotal(p) - [...out.values()].reduce((a, b) => a + b, 0)))
+    // The remainder is shared evenly across the balance stages; the last takes the rounding.
+    const share = cents(rest / balance.length)
+    balance.forEach((s, n) => out.set(s.id, n === balance.length - 1 ? cents(rest - share * (balance.length - 1)) : share))
   }
   return out
 }
