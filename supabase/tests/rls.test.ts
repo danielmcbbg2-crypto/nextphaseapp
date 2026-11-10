@@ -1121,6 +1121,29 @@ describe('website maintenance requests', () => {
     await assert.rejects(upload(`incoming/${crypto.randomUUID()}.jpg`, 'photos'), /row-level security/)
   })
 
+  test('photo uploads are rate-limited and capped, so visitors cannot fill the storage', async () => {
+    const count = async () => Number((await pool.query(`select count(*) from storage.objects where bucket_id = 'lead-photos'`)).rows[0].count)
+    const before = await count()
+    try {
+      // A burst: 300 uploads in the last 10 minutes is the most that is accepted.
+      await pool.query(
+        `insert into storage.objects (bucket_id, name) select 'lead-photos', 'incoming/' || gen_random_uuid() || '.jpg' from generate_series(1, $1)`,
+        [300 - before],
+      )
+      await assert.rejects(upload(), /row-level security/)
+      // Older uploads stop counting towards the burst limit.
+      await pool.query(`update storage.objects set created_at = now() - interval '1 hour' where bucket_id = 'lead-photos'`)
+      await upload()
+    } finally {
+      await pool.query(`delete from storage.objects where bucket_id = 'lead-photos'`)
+    }
+  })
+
+  test('the unused-photo clean-up and quote text claim are in place', async () => {
+    assert.equal((await pool.query(`select 1 from pg_proc where proname = 'lead_photo_upload_ok'`)).rowCount, 1)
+    assert.equal((await pool.query(`select 1 from information_schema.columns where table_name = 'projects' and column_name = 'quote_sms_notified'`)).rowCount, 1)
+  })
+
   test('visitors cannot add or read requests directly', async () => {
     await assert.rejects(asAnon(`insert into leads (name) values ('x')`), /row-level security/)
     await assert.rejects(asUser(uid.sarah, `insert into leads (name) values ('x')`), /row-level security/)

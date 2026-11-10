@@ -12,6 +12,7 @@
 //     server builds the message and sends it only to the admin numbers in settings.
 //   admins / direct — admins only (manual alerts, dispatch notices, test sends).
 import { createClient } from 'npm:@supabase/supabase-js@2.49.4'
+import { claimOnce, releaseClaim } from './claim.ts'
 
 /** Whether the login has done its second sign-in step (its token, already checked by getUser, says "aal2"). Admin powers need it. */
 function secondStep(jwt: string): boolean {
@@ -133,8 +134,10 @@ Deno.serve(async (req) => {
       if (!wanted) return json({ results: [] })
       const where = r.properties ? ` · ${r.properties.address}, ${r.properties.suburb}` : ''
       const message = `NPM #${r.number}${r.urgency === 'urgent' ? ' URGENT' : ''} — ${r.title}${where} (${r.category})`
+      // Claim first (atomic), then send: a second call at the same moment finds it claimed.
+      if (!(await claimOnce(db, 'requests', r.id, 'sms_notified'))) return json({ results: [] })
       const results = await sendToAdmins(recipients, message, 'New maintenance request')
-      await db.from('requests').update({ sms_notified: true }).eq('id', r.id)
+      if (results.every((x) => x.status === 'failed')) await releaseClaim(db, 'requests', r.id, 'sms_notified')
       return json({ results })
     }
 
@@ -142,8 +145,8 @@ Deno.serve(async (req) => {
       const { data: p } = await db.from('projects').select('*').eq('id', body.projectId).maybeSingle()
       if (!p || (p.client_id !== me.id && !isAdmin)) return json({ error: 'Project not found' }, 404)
       const prefix = `NPM quote request P-${p.number} `
-      const { count } = await db.from('sms_log').select('id', { count: 'exact', head: true }).like('message', `${prefix}%`)
-      if (count) return json({ results: [] }) // already alerted
+      // Claim first (atomic), then send, instead of searching the log for an earlier text.
+      if (!(await claimOnce(db, 'projects', p.id, 'quote_sms_notified'))) return json({ results: [] }) // already alerted
       // An admin may request it from the client's dashboard: name both.
       let who = me.name
       if (p.client_id !== me.id) {
@@ -151,6 +154,7 @@ Deno.serve(async (req) => {
         who = `${me.name} for ${client?.name ?? 'client'}`
       }
       const results = await sendToAdmins(recipients, `${prefix}— ${p.title} (${who})`, 'Renovation quote request')
+      if (results.every((x) => x.status === 'failed')) await releaseClaim(db, 'projects', p.id, 'quote_sms_notified')
       return json({ results })
     }
 

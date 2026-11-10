@@ -8,6 +8,7 @@
 //       otherwise a link to choose a new password.
 //   { action: 'delete', profileId }  removes the login and the profile.
 import { createClient } from 'npm:@supabase/supabase-js@2.49.4'
+import { MASTER_ID, allowedOrigins, deleteBlocked, isAppUrl as onPortal } from './guards.ts'
 
 /** Whether the login has done its second sign-in step (its token, already checked by getUser, says "aal2"). Admin powers need it. */
 function secondStep(jwt: string): boolean {
@@ -29,7 +30,8 @@ const json = (body: unknown, status = 200) =>
 
 const db = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
 
-const MASTER_ID = 'u-admin'
+// Links may only point at the portal's own address (PORTAL_URL) or one listed in APP_ORIGINS.
+const ORIGINS = allowedOrigins(Deno.env.get('PORTAL_URL') ?? 'https://portal.nextphasemaintenance.com.au', Deno.env.get('APP_ORIGINS') ?? '')
 const ROLES = ['admin', 'client', 'provider']
 const PERMISSIONS = ['canSubmitRequests', 'canDispatchJobs', 'canManageInvoices', 'canEditPermissions', 'canManageProjects', 'canSubmitExpenses', 'canManageStore']
 
@@ -57,7 +59,7 @@ async function signInLink(email: string, hasLogin: boolean, purpose: 'invite' | 
   return { link: `${redirectTo.split('#')[0]}#/accept?${query}`, userId: res.data.user.id }
 }
 
-const isAppUrl = (u: unknown): u is string => typeof u === 'string' && /^https?:\/\/[^\s]+$/.test(u)
+const isAppUrl = (u: unknown): u is string => onPortal(u, ORIGINS)
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })
@@ -74,7 +76,7 @@ Deno.serve(async (req) => {
 
   if (body.action === 'invite') {
     const byLink = body.delivery === 'link'
-    if (byLink && !isAppUrl(body.redirectTo)) return json({ error: 'Missing app address' }, 400)
+    if (!isAppUrl(body.redirectTo)) return json({ error: 'Missing or unrecognised app address' }, 400)
     const p = body.profile ?? {}
     const email = String(p.email ?? '').trim()
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return json({ error: 'Enter a valid email address' }, 400)
@@ -115,7 +117,7 @@ Deno.serve(async (req) => {
   }
 
   if (body.action === 'link') {
-    if (!isAppUrl(body.redirectTo)) return json({ error: 'Missing app address' }, 400)
+    if (!isAppUrl(body.redirectTo)) return json({ error: 'Missing or unrecognised app address' }, 400)
     const { data: target } = await db.from('profiles').select('id, email, auth_id, status').eq('id', body.profileId).maybeSingle()
     if (!target) return json({ error: 'Account not found' }, 404)
     if (target.status === 'suspended') return json({ error: 'This account is suspended. Reactivate it first.' }, 400)
@@ -148,7 +150,8 @@ Deno.serve(async (req) => {
   }
 
   if (body.action === 'delete') {
-    if (body.profileId === me.id) return json({ error: "You can't delete your own account" }, 400)
+    const blocked = deleteBlocked(String(body.profileId ?? ''), me.id)
+    if (blocked) return json({ error: blocked }, blocked.startsWith('The master') ? 403 : 400)
     const { data: target } = await db.from('profiles').select('id, auth_id').eq('id', body.profileId).maybeSingle()
     if (!target) return json({ error: 'Account not found' }, 404)
     // Profile first: the database refuses if jobs or invoices still reference this client, or if the

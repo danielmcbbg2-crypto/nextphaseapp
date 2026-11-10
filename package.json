@@ -11,7 +11,7 @@
     "lint": "eslint .",
     "test:db": "bash supabase/tests/run.sh",
     "build:demo": "tsc -b && vite build --mode demo",
-    "test:unit": "tsx --test supabase/tests/photo.test.ts supabase/tests/quoteDraft.test.ts src/lib/listingCheck.test.ts"
+    "test:unit": "tsx --test supabase/tests/photo.test.ts supabase/tests/hardening.test.ts supabase/tests/quoteDraft.test.ts src/lib/listingCheck.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.4",
