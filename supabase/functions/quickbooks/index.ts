@@ -25,6 +25,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.49.4'
 import { seal, tokenKey, unseal } from './seal.ts'
 import { customerBody, depositBody, displayName, estimateBody, invoiceBody, invoiceTotal, qboError, qboErrorCode, quoted, type ItemRow, type OrderRow } from './invoice.ts'
+import { GENERIC_ERROR, cronAllowed, makeThrottle } from '../_shared/guard.ts'
 
 /** Whether the login has done its second sign-in step (its token, already checked by getUser, says "aal2"). Admin powers need it. */
 function secondStep(jwt: string): boolean {
@@ -667,6 +668,8 @@ async function callback(url: URL) {
   return back('connected')
 }
 
+const runThrottle = makeThrottle(20_000)
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })
   const url = new URL(req.url)
@@ -678,11 +681,13 @@ Deno.serve(async (req) => {
   const body = await req.json().catch(() => ({}))
 
   if (body.run) {
+    if (!cronAllowed(req, Deno.env.get('CRON_SECRET'))) return json({ error: 'Not allowed' }, 401)
+    if (!runThrottle()) return json({ skipped: 'ran a moment ago' }, 429)
     try {
       return json(await run())
     } catch (e) {
       console.error('quickbooks run failed:', (e as Error).message)
-      return json({ error: (e as Error).message }, 500)
+      return json({ error: GENERIC_ERROR }, 500)
     }
   }
 

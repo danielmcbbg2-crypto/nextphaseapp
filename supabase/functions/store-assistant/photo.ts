@@ -34,10 +34,14 @@ export function privateAddress(ip: string): boolean {
   return a === '::' || a === '::1' || /^f[cd]/.test(a) || /^fe[89ab]/.test(a) || a.startsWith('::ffff:')
 }
 
-/** Where a name really points: refuses names that lead to private addresses (or can't be looked up). */
-export async function resolvesPublic(host: string): Promise<boolean> {
-  const dns = (globalThis as { Deno?: { resolveDns?: (h: string, t: 'A' | 'AAAA') => Promise<string[]> } }).Deno?.resolveDns
-  if (!dns) return true // not available here: the name checks still apply
+type Dns = (h: string, t: 'A' | 'AAAA') => Promise<string[]>
+
+/**
+ * Where a name really points: refuses names that lead to private addresses, that can't be looked up,
+ * or when DNS lookup isn't available at all (fails closed). `dns` is only passed in by tests.
+ */
+export async function resolvesPublic(host: string, dns: Dns | undefined = (globalThis as { Deno?: { resolveDns?: Dns } }).Deno?.resolveDns): Promise<boolean> {
+  if (!dns) return false // can't check where the name points, so don't fetch
   const found = (await Promise.all([dns(host, 'A').catch(() => []), dns(host, 'AAAA').catch(() => [])])).flat()
   return found.length > 0 && !found.some(privateAddress)
 }
@@ -149,6 +153,12 @@ export async function safeFetch(start: string, signal: AbortSignal, accept: stri
   for (let hop = 0; hop < 4; hop++) {
     if (!fetchable(url) || !(await resolvesPublic(url.hostname.replace(/\.+$/, '')))) throw new Error(`Can't open ${url.hostname}`)
     const res = await fetch(url, { signal, redirect: 'manual', headers: { 'user-agent': UA, accept } })
+    // Look the name up again now the connection is made: a site that answered differently the second
+    // time (DNS rebinding) is refused, and nothing it sent is used.
+    if (!(await resolvesPublic(url.hostname.replace(/\.+$/, '')))) {
+      await res.body?.cancel()
+      throw new Error(`Can't open ${url.hostname}`)
+    }
     if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
       await res.body?.cancel()
       url = new URL(res.headers.get('location')!, url)

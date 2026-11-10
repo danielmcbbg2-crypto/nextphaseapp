@@ -14,6 +14,7 @@ import { createClient } from 'npm:@supabase/supabase-js@2.49.4'
 import Anthropic from 'npm:@anthropic-ai/sdk@0.131.0'
 import { findPrice, fingerprint, fromShopify, pageText, readStock, type Reading } from './stock.ts'
 import { safeFetch } from './web.ts'
+import { GENERIC_ERROR, cronAllowed } from '../_shared/guard.ts'
 
 /** Whether the login has done its second sign-in step (its token, already checked by getUser, says "aal2"). Admin powers need it. */
 function secondStep(jwt: string): boolean {
@@ -154,17 +155,24 @@ Deno.serve(async (req) => {
   const body = await req.json().catch(() => ({}))
 
   if (body.scheduled) {
+    if (!cronAllowed(req, Deno.env.get('CRON_SECRET'))) return json({ error: 'Not allowed' }, 401)
     const { data: last } = await db.from('stock_check_runs').select('started_at').order('started_at', { ascending: false }).limit(1).maybeSingle()
     if (last && Date.now() - new Date(last.started_at).getTime() < EVERY_MS) return json({ skipped: 'checked recently' })
     const { data: run, error } = await db.from('stock_check_runs').insert({ trigger: 'scheduled' }).select('id').single()
-    if (error) return json({ error: error.message }, 500)
+    if (error) {
+      console.error('supplier-stock failed:', error.message)
+      return json({ error: GENERIC_ERROR }, 500)
+    }
     const { data: sources, error: e1 } = await db
       .from('product_sources')
       .select('id, source_url, page_hash, stock_checked_at')
       .eq('track_stock', true)
       .order('stock_checked_at', { ascending: true, nullsFirst: true })
     const { data: archived, error: e2 } = await db.from('products').select('id').eq('status', 'archived')
-    if (e1 || e2) return json({ error: (e1 ?? e2)!.message }, 500)
+    if (e1 || e2) {
+      console.error('supplier-stock failed:', (e1 ?? e2)!.message)
+      return json({ error: GENERIC_ERROR }, 500)
+    }
     const skip = new Set((archived ?? []).map((p) => p.id as string))
     const list = ((sources ?? []) as Source[]).filter((s) => /^https?:\/\//.test(s.source_url) && !skip.has(s.id)).slice(0, PER_RUN)
     let changed = 0
@@ -189,7 +197,8 @@ Deno.serve(async (req) => {
     try {
       return json(await checkAndSave(s as Source))
     } catch (e) {
-      return json({ error: (e as Error).message }, 500)
+      console.error('supplier-stock check failed:', (e as Error).message)
+      return json({ error: GENERIC_ERROR }, 500)
     }
   }
 

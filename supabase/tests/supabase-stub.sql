@@ -25,7 +25,7 @@ grant usage on schema auth to supabase_auth_admin;
 grant select, insert on auth.users to supabase_auth_admin;
 create schema storage;
 create table storage.buckets (id text primary key, name text, public boolean, file_size_limit bigint, allowed_mime_types text[]);
-create table storage.objects (id uuid primary key default gen_random_uuid(), bucket_id text, name text);
+create table storage.objects (id uuid primary key default gen_random_uuid(), bucket_id text, name text, created_at timestamptz not null default now());
 alter table storage.objects enable row level security;
 -- As in Supabase: the API roles reach storage.objects, and its policies decide.
 grant usage on schema storage to anon, authenticated, service_role;

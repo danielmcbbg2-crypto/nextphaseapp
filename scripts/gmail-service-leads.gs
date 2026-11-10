@@ -31,6 +31,9 @@ function checkServiceLeads() {
     let ok = true
     thread.getMessages().forEach((m) => {
       if (Date.now() - m.getDate().getTime() > 2 * 86400000) return
+      // Only mail whose sender address really is @service.com.au (the search below also matches look-alikes).
+      const addr = (m.getFrom().match(/<([^<>\s]+)>\s*$/) || [null, m.getFrom()])[1].trim().toLowerCase()
+      if (!/^[^@\s<>]+@([a-z0-9-]+\.)*service\.com\.au$/.test(addr)) return
       const html = m.getBody()
       const links = []
       const re = /href\s*=\s*["']([^"']+)["']/gi

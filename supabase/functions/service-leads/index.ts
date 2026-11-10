@@ -15,6 +15,7 @@
 // integration_keys table (or a LEAD_INTAKE_SECRET secret, which wins); optional PORTAL_URL.
 import { createClient } from 'npm:@supabase/supabase-js@2.49.4'
 import Anthropic from 'npm:@anthropic-ai/sdk@0.131.0'
+import { GENERIC_ERROR, fromServiceDotComAu, linkExpired, stripContacts } from './guards.ts'
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -137,6 +138,8 @@ async function queueText(to: string, message: string, event: string, leadId: str
 
 async function intake(email: Email) {
   if (!email.id || !email.body) return json({ error: 'Missing email id or text' }, 400)
+  // Only real Service.com.au senders (the Gmail search alone matches look-alike text).
+  if (!fromServiceDotComAu(email.from)) return json({ status: 'not_a_lead', reason: 'sender' })
   const { data: seen } = await db.from('leads').select('id').eq('external_id', `gmail:${email.id}`).maybeSingle()
   if (seen) return json({ status: 'duplicate', lead_id: seen.id })
 
@@ -151,7 +154,7 @@ async function intake(email: Email) {
     services: (r.services ?? []).filter((s) => SERVICES.includes(s)),
     urgency: r.urgency,
     contact_by: 'phone',
-    message: clip(`${r.summary}\n\n— Service.com.au alert: ${email.subject}`, 2000),
+    message: clip(`${stripContacts(r.summary)}\n\n— Service.com.au alert: ${email.subject}`, 2000),
     source: 'service.com.au',
     external_id: `gmail:${email.id}`,
     job_url: jobUrl,
@@ -164,7 +167,7 @@ async function intake(email: Email) {
 
   const token = newToken()
   const { error: rErr } = await db.from('lead_replies').insert({
-    lead_id: lead.id, token, draft: clip(r.reply, 2000), fit: r.fit, fit_reason: clip(r.fit_reason, 200), summary: clip(r.summary, 500), headline: clip(r.headline, 80),
+    lead_id: lead.id, token, draft: clip(stripContacts(r.reply), 2000), fit: r.fit, fit_reason: clip(stripContacts(r.fit_reason), 200), summary: clip(stripContacts(r.summary), 500), headline: clip(stripContacts(r.headline), 80),
   })
   if (rErr) throw new Error(rErr.message)
 
@@ -172,13 +175,13 @@ async function intake(email: Email) {
   const { data: admins } = await db.from('profiles').select('id, permissions').eq('role', 'admin').eq('status', 'active')
   const inbox = (admins ?? [])
     .filter((a) => (a.permissions ?? []).includes('canManageProjects') || (a.permissions ?? []).includes('canDispatchJobs'))
-    .map((a) => ({ user_id: a.id, title: `Service.com.au lead #${lead.number}: ${first}`, body: [r.summary, r.suburb].filter(Boolean).join(' · ') }))
+    .map((a) => ({ user_id: a.id, title: `Service.com.au lead #${lead.number}: ${first}`, body: [stripContacts(r.summary), r.suburb].filter(Boolean).join(' · ') }))
   if (inbox.length) await db.from('inbox').insert(inbox)
 
   const { data: settings } = await db.from('settings').select('sms').eq('id', 1).maybeSingle()
   const recipients: string[] = settings?.sms?.recipients ?? []
-  const fitNote = r.fit === 'good' ? '' : r.fit === 'skip' ? ` (Claude suggests skipping: ${clip(r.fit_reason, 60)})` : ' (worth a check)'
-  const text = `New Service.com.au lead${r.urgency === 'urgent' ? ' (URGENT)' : ''}: ${clip(r.headline || r.summary, 80)}${r.suburb ? `, ${clip(r.suburb, 40)}` : ''}${fitNote}. Reply drafted, tap to send: ${PORTAL}/#/reply/${token}`
+  const fitNote = r.fit === 'good' ? '' : r.fit === 'skip' ? ` (Claude suggests skipping: ${clip(stripContacts(r.fit_reason), 60)})` : ' (worth a check)'
+  const text = `New Service.com.au lead${r.urgency === 'urgent' ? ' (URGENT)' : ''}: ${clip(stripContacts(r.headline || r.summary), 80)}${r.suburb ? `, ${clip(r.suburb, 40)}` : ''}${fitNote}. Reply drafted, tap to send: ${PORTAL}/#/reply/${token}`
   for (const to of recipients) await queueText(to, text, `Service.com.au lead #${lead.number}`, lead.id, 'service_lead')
 
   return json({ status: 'lead', lead_id: lead.id, number: lead.number, fit: r.fit })
@@ -187,8 +190,8 @@ async function intake(email: Email) {
 async function byToken(token: string) {
   if (!/^[A-Za-z0-9_-]{24,64}$/.test(token)) return null
   const { data } = await db.from('lead_replies').select('*, leads(id, number, name, suburb, services, urgency, phone, job_url, created_at)').eq('token', token).maybeSingle()
-  // Links stop working after 30 days.
-  if (!data || Date.now() - new Date(data.created_at).getTime() > 30 * 86_400_000) return null
+  // Links stop working after 7 days.
+  if (!data || linkExpired(data.created_at)) return null
   return data
 }
 
@@ -224,8 +227,13 @@ Deno.serve(async (req) => {
     if (body.action === 'decide') {
       const decision = body.decision === 'skip' ? 'skipped' : body.decision === 'approve' ? 'approved' : null
       if (!decision) return json({ error: 'Approve or skip?' }, 400)
-      const draft = clip(body.draft ?? row.draft, 2000) || row.draft
-      await db.from('lead_replies').update({ status: decision, draft, decided_at: new Date().toISOString() }).eq('lead_id', lead.id)
+      const draft = clip(stripContacts(String(body.draft ?? row.draft)), 2000) || row.draft
+      // Decided once: only an undecided reply can be updated (atomic), so a link can't flip the decision.
+      const { data: decided, error: dErr } = await db.from('lead_replies')
+        .update({ status: decision, draft, decided_at: new Date().toISOString() })
+        .eq('lead_id', lead.id).eq('status', 'awaiting').select('lead_id')
+      if (dErr) throw new Error(dErr.message)
+      if (!decided?.length) return json({ error: 'This reply has already been decided.' }, 409)
       await db.from('leads').update({ status: decision === 'approved' ? 'contacted' : 'lost' }).eq('id', lead.id)
       return json({ status: decision })
     }
@@ -233,8 +241,13 @@ Deno.serve(async (req) => {
     if (body.action === 'contact') {
       const phone = clip(body.phone, 40)
       if (phone.replace(/\D/g, '').length < 8) return json({ error: 'Enter the customer’s mobile number.' }, 400)
-      if (lead.phone) return json({ error: 'This customer has already been texted.' }, 409)
-      await db.from('leads').update({ phone, status: 'contacted' }).eq('id', lead.id)
+      if (row.status === 'skipped') return json({ error: 'This lead was skipped.' }, 409)
+      // Once only, atomically: the number is set only while it is still empty, so two taps (or a shared
+      // link) can't queue a second text or point it at another number.
+      const { data: claimed, error: cErr } = await db.from('leads')
+        .update({ phone, status: 'contacted' }).eq('id', lead.id).eq('phone', '').select('id')
+      if (cErr) throw new Error(cErr.message)
+      if (!claimed?.length) return json({ error: 'This customer has already been texted.' }, 409)
       const first = lead.name === 'Service.com.au customer' ? 'there' : String(lead.name).split(' ')[0]
       const job = String(row.headline || 'job').replace(/\.$/, '').toLowerCase()
       const msg = `Hi ${first}, it's Daniel from Next Phase Maintenance. I've just replied to your ${job} request on Service.com.au. Happy to chat or come out for a look. If you can, text through a few photos and I'll get you a quote.`
@@ -245,6 +258,6 @@ Deno.serve(async (req) => {
     return json({ error: 'Unknown action' }, 400)
   } catch (e) {
     console.error('service-leads failed:', (e as Error).message)
-    return json({ error: (e as Error).message }, 500)
+    return json({ error: GENERIC_ERROR }, 500)
   }
 })

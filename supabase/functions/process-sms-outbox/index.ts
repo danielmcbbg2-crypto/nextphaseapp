@@ -12,6 +12,7 @@
 // With none set, claimed rows are marked 'held' (not sent) so stale texts never go out later by
 // surprise; queue them again once a provider is connected.
 import { createClient } from 'npm:@supabase/supabase-js@2.49.4'
+import { GENERIC_ERROR, cronAllowed, makeThrottle } from '../_shared/guard.ts'
 
 const db = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
 
@@ -75,10 +76,17 @@ async function send(row: Row): Promise<Outcome> {
   }
 }
 
+const throttle = makeThrottle(10_000)
+
 Deno.serve(async (req) => {
   if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
+  if (!cronAllowed(req, Deno.env.get('CRON_SECRET'))) return Response.json({ error: 'Not allowed' }, { status: 401 })
+  if (!throttle()) return Response.json({ skipped: 'ran a moment ago' }, { status: 429 })
   const { data: rows, error } = await db.rpc('claim_sms_outbox', { max_rows: 20 })
-  if (error) return Response.json({ error: error.message }, { status: 500 })
+  if (error) {
+    console.error('process-sms-outbox failed:', error.message)
+    return Response.json({ error: GENERIC_ERROR }, { status: 500 })
+  }
 
   const results = []
   for (const row of (rows ?? []) as Row[]) {
