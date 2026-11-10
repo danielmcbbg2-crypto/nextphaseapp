@@ -902,6 +902,19 @@ export function ProductEditor({ product, notice, onClose, onSaved }: { product: 
     onSaved()
   }
 
+  /**
+   * Removes the product for good. The database deletes its prices, supplier link and price history
+   * with it; past orders keep their line (title, SKU and price) but no longer link to it.
+   */
+  const hardDelete = () => {
+    if (!confirm(`Permanently delete “${product.title || 'this product'}”?\n\nThis can’t be undone. Its prices, supplier link and price history are deleted too. Past orders keep their line items.\n\nTo just hide it, set its status to Draft or Archived instead.`)) return
+    update((d) => {
+      d.products = d.products.filter((x) => x.id !== product.id)
+      d.priceHistory = d.priceHistory.filter((h) => h.productId !== product.id)
+    })
+    onClose()
+  }
+
   return (
     <Modal open onClose={onClose} title={isNew ? 'Add product' : `Edit ${product.title}`} width="max-w-3xl">
       <form className="grid gap-4 sm:grid-cols-2" onSubmit={save}>
@@ -1057,7 +1070,12 @@ export function ProductEditor({ product, notice, onClose, onSaved }: { product: 
           </select>
         </Field>
         {error && <p className="text-sm text-red-600 sm:col-span-2">{error}</p>}
-        <div className="flex items-end justify-end sm:col-span-1">
+        <div className="flex flex-wrap items-end justify-end gap-2 sm:col-span-1">
+          {!isNew && (
+            <button type="button" className="btn-ghost text-red-600 hover:bg-red-50" onClick={hardDelete}>
+              <Trash2 size={15} /> Delete permanently
+            </button>
+          )}
           <button className="btn-primary">{isNew ? 'Add product' : 'Save product'}</button>
         </div>
       </form>
